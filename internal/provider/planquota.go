@@ -727,10 +727,6 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 	}
 	stepfun := make(chan []SubscriptionQuota, 1)
 	go func() { stepfun <- stepPlanQuotas(ctx) }()
-	volc := make(chan []SubscriptionQuota, 1)
-	go func() { volc <- volcPlanQuotas(ctx) }()
-	tencent := make(chan []SubscriptionQuota, 1)
-	go func() { tencent <- tencentPlanQuotas(ctx) }()
 	wg.Wait()
 	out := []SubscriptionQuota{}
 	for i, q := range got {
@@ -741,8 +737,6 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 		}
 	}
 	out = append(out, <-stepfun...)
-	out = append(out, <-volc...)
-	out = append(out, <-tencent...)
 	if ctx.Err() == nil {
 		noteQuotaHistory(out, time.Now())
 		c.Lock()
