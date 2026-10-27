@@ -73,9 +73,6 @@ func balanceSourceOf(p Provider) (balanceSource, bool) {
 			return balanceSource{"https://api.stepfun.ai/v1/accounts", readStepFun("$"), "", nil, nil}, true
 		case "api.commandcode.ai":
 			return balanceSource{"https://api.commandcode.ai/alpha/billing/credits", readCommandCode, "", nil, nil}, true
-		case "ollama.com":
-			// the credits bought past the plan's allowance (#1888)
-			return balanceSource{ollamaBalanceURL, readOllamaCredits, "", nil, nil}, true
 		case "aihubmix.com":
 			if p.BalanceToken != "" {
 				return balanceSource{"https://aihubmix.com/api/user/self", readAiHubMixAccount, p.BalanceToken, nil, nil}, true
@@ -1292,19 +1289,11 @@ func balanceRead(ctx context.Context, p Provider) (amount string, parts, split [
 		return "", nil, nil, nil, true, fmt.Errorf("%s: %s", res.Status, msg)
 	}
 	if p.BalanceURL != "" {
-		if sub2APIKeyLimits(p) {
-			ws, _ = readSub2APIKeyLimits(b)
-		}
 		// the field the user wrote: its amounts each apart, as well
 		if parts, err = readBalanceParts(b, balancePathOf(p)); err != nil {
-			if len(ws) > 0 && strings.TrimSpace(p.BalancePath) == "" {
-				// a key given limits and no quota of its own has no
-				// "remaining": its windows are what it has left
-				return "", nil, nil, ws, true, nil
-			}
 			return "", nil, nil, nil, true, err
 		}
-		return joinBalanceParts(parts), parts, nil, ws, true, nil
+		return joinBalanceParts(parts), parts, nil, nil, true, nil
 	}
 	amount, err = src.read(b)
 	if err == nil && src.split != nil {
@@ -1443,7 +1432,7 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 		}
 		src, ok := balanceSourceOf(p)
 		zen := !ok && openCodeZen(p)
-		if !ok && !clineKeyCard(p) && !zen {
+		if !ok && !zen {
 			continue
 		}
 		others := 0
@@ -1491,24 +1480,7 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 			defer wg.Done()
 			defer slots.take(ctx, j.p.ID)()
 			q := SubscriptionQuota{Provider: j.p.ID, Name: j.p.Name, Icon: j.p.Icon, User: j.user, Windows: []QuotaWindow{}}
-			if clineKeyCard(j.p) {
-				// ClinePass's limits beside the credits (cline_usage.go)
-				if ws, amount, err := clineKeyUsage(ctx, j.p); err != nil {
-					// a balance read beside limits that weren't is kept
-					q.Error, q.Balance = err.Error(), amount
-				} else {
-					q.Windows = append(q.Windows, ws...)
-					q.Balance = amount
-					now := time.Now()
-					q.ReadAt = &now
-				}
-				out[i] = keepReading(ctx, q, keyTag("balance", j.p.Key))
-				return
-			}
 			amount, parts, split, ws, _, err := balanceRead(ctx, j.p)
-			if errors.Is(err, errNoBalance) {
-				return // a reply with no balance for this key: no card
-			}
 			if errors.Is(err, errOpenCodeNoBalance) {
 				// nothing to read or keep: where the balance is shown
 				q.Error, q.SeeAt = err.Error(), OpenCodeConsole

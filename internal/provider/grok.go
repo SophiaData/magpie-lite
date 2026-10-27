@@ -41,6 +41,10 @@ import (
 	"github.com/yetone/magpie/internal/proc"
 )
 
+// GrokBase is the CLI's backend, the host its usage card names; a var so
+// tests can point it elsewhere.
+var GrokBase = "https://cli-chat-proxy.grok.com/v1"
+
 // GrokExecutable finds the Grok Build CLI; a var so tests can fake it.
 var GrokExecutable = func() string {
 	home, _ := os.UserHomeDir()
