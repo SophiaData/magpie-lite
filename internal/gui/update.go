@@ -112,16 +112,28 @@ type updateJSON struct {
 
 var updates = &updater{}
 
+// autoUpdatesDisabled keeps this build from ever asking for a newer
+// version by itself: no start-up check, no clock, no download, no restart.
+// The version row's Check and `magpie update` still work, so an update is
+// the user's own move.
+const autoUpdatesDisabled = update.AutoUpdateDisabled
+
 // updateDue is whether the feed is asked by itself now, the last time it
 // was asked at last: never with automatic updates off, otherwise once the
 // settings' interval is up. The settings are read again each minute, so
 // one changed (in Settings or the CLI) counts from the last check.
 func updateDue(s settings.Settings, last, now time.Time) bool {
+	if autoUpdatesDisabled {
+		return false
+	}
 	return !s.NoAutoUpdate && now.Sub(last) >= time.Duration(s.UpdateEvery)*time.Minute
 }
 
 func (u *updater) start() {
 	u.place(runtime.GOOS, update.GUI)
+	if autoUpdatesDisabled {
+		return
+	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
 		for {
@@ -286,7 +298,7 @@ func (u *updater) latestStale() bool {
 // stale "latest", unless automatic updates are off. It doesn't wait for
 // the answer: the row shows checking, and reads again.
 func (u *updater) refreshLatest(s settings.Settings) {
-	if s.NoAutoUpdate {
+	if autoUpdatesDisabled || s.NoAutoUpdate {
 		return
 	}
 	u.mu.Lock()

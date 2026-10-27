@@ -37,16 +37,55 @@ import (
 	"github.com/yetone/magpie/internal/source"
 )
 
-// Site is magpie's home; its /api/latest is the update feed.
-const Site = "https://usemagpie.ai"
+// Site is this build's home: the GitHub repository its releases are
+// published in.
+const Site = "https://github.com/gtk96/magpie"
 
-// Feed is where the newest release is described. MAGPIE_UPDATE_FEED points
-// it elsewhere, for testing an update against a local server.
+// AutoUpdateDisabled is this build's own choice: it never asks for a newer
+// version by itself, on any setting. A check the user asks for (Settings'
+// Check, `magpie update`) still works.
+const AutoUpdateDisabled = true
+
+// Repo is the GitHub repository (owner/name) this build updates from.
+const Repo = "gtk96/magpie"
+
+// Feed is where the newest release is described: GitHub's latest release
+// of Repo. MAGPIE_UPDATE_FEED points it elsewhere, for testing an update
+// against a local server.
 func Feed() string {
 	if f := os.Getenv("MAGPIE_UPDATE_FEED"); f != "" {
 		return f
 	}
-	return Site + "/api/latest"
+	return "https://api.github.com/repos/" + Repo + "/releases/latest"
+}
+
+// githubRelease is GitHub's release JSON, the shape Feed answers with.
+type githubRelease struct {
+	TagName    string `json:"tag_name"`
+	Body       string `json:"body"`
+	HTMLURL    string `json:"html_url"`
+	Draft      bool   `json:"draft"`
+	Prerelease bool   `json:"prerelease"`
+	Assets     []struct {
+		Name   string `json:"name"`
+		Size   int64  `json:"size"`
+		URL    string `json:"browser_download_url"`
+		Digest string `json:"digest"` // "sha256:<hex>"
+	} `json:"assets"`
+}
+
+// release is g as this package's Release.
+func (g githubRelease) release() Release {
+	r := Release{
+		Version: strings.TrimPrefix(strings.TrimSpace(g.TagName), "v"),
+		Notes:   g.Body,
+		URL:     g.HTMLURL,
+		Assets:  map[string]Asset{},
+	}
+	for _, a := range g.Assets {
+		r.Assets[a.Name] = Asset{URL: a.URL, Size: a.Size, SHA256: strings.TrimPrefix(a.Digest, "sha256:")}
+	}
+	return r
 }
 
 // Release is one published version.
@@ -94,9 +133,18 @@ func LatestIn(ctx context.Context, lang string) (*Release, error) {
 	if res.StatusCode != 200 {
 		return nil, fmt.Errorf("update feed: %s", res.Status)
 	}
-	var r Release
-	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
 		return nil, fmt.Errorf("update feed: %w", err)
+	}
+	var r Release
+	if json.Unmarshal(body, &r) != nil || r.Version == "" {
+		// GitHub's own shape, which Feed answers with
+		var g githubRelease
+		if err := json.Unmarshal(body, &g); err != nil || g.TagName == "" {
+			return nil, fmt.Errorf("update feed: no release")
+		}
+		r = g.release()
 	}
 	if parse(r.Version) == nil {
 		return nil, fmt.Errorf("update feed: no version")

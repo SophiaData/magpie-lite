@@ -23,19 +23,21 @@ type Note struct {
 	Pending bool `json:"pending,omitempty"`
 }
 
-// NotesFeed is where the notes of past releases are listed: beside the
-// update feed, on magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
+// NotesFeed is where the notes of past releases are listed: this
+// repository's releases on GitHub. MAGPIE_NOTES_FEED points it elsewhere.
 func NotesFeed() string {
 	if f := os.Getenv("MAGPIE_NOTES_FEED"); f != "" {
 		return f
 	}
-	return Site + "/api/notes"
+	return "https://api.github.com/repos/" + Repo + "/releases?per_page=100"
 }
 
-// ReleasePage is version's page on GitHub, where its notes are when the
-// site can't give them (#661).
+// githubNotes is whether feed is GitHub's releases list.
+func githubNotes(feed string) bool { return strings.Contains(feed, "api.github.com/repos/") }
+
+// ReleasePage is version's page on GitHub, where its notes are.
 func ReleasePage(version string) string {
-	return "https://github.com/yetone/magpie-releases/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	return "https://github.com/" + Repo + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 // NotesBetween asks the site for the notes of every release after after
@@ -71,10 +73,14 @@ func NotesBack(ctx context.Context, upto string, n int, lang string) ([]Note, er
 
 // askNotes is the site's list for q, each release's notes in lang.
 func askNotes(ctx context.Context, q url.Values, lang string) ([]Note, error) {
+	feed := NotesFeed()
+	if githubNotes(feed) {
+		return askGitHubNotes(ctx, q, lang)
+	}
 	if lang != "" {
 		q.Set("lang", lang)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", NotesFeed()+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", feed+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +102,41 @@ func askNotes(ctx context.Context, q url.Values, lang string) ([]Note, error) {
 		out.Releases[i].Notes = InLang(out.Releases[i].Notes, lang)
 	}
 	return out.Releases, nil
+}
+
+// askGitHubNotes asks GitHub's releases list for every published release
+// and reads it as Note list; GitHub has no upto/limit, so Between and Back
+// cut the list here.
+func askGitHubNotes(ctx context.Context, q url.Values, lang string) ([]Note, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", NotesFeed(), nil)
+	if err != nil {
+		return nil, err
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("release notes: %s", res.Status)
+	}
+	var rels []githubRelease
+	if err := json.NewDecoder(res.Body).Decode(&rels); err != nil {
+		return nil, fmt.Errorf("release notes: %w", err)
+	}
+	out := make([]Note, 0, len(rels))
+	for _, g := range rels {
+		if g.Draft || g.Prerelease || g.TagName == "" {
+			continue
+		}
+		n := Note{
+			Version: strings.TrimPrefix(g.TagName, "v"),
+			Notes:   InLang(g.Body, lang),
+			URL:     g.HTMLURL,
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // zhMarker is where a release's notes turn from English to Chinese: the
