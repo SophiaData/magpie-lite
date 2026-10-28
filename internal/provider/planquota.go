@@ -61,6 +61,10 @@ func planQuotaSourceOf(p Provider) (planQuotaSource, bool) {
 			// a Coding Plan key (sk-cp-…) is told its windows; a
 			// pay-as-you-go key isn't, and gets no card (#387)
 			return planQuotaSource{"https://" + hostOf(base) + "/v1/token_plan/remains", true, readMiniMaxPlan, false}, true
+		case "ollama.com":
+			// Ollama Cloud's included allowance (#1888); a key with none
+			// gets no card
+			return planQuotaSource{ollamaBalanceURL, true, readOllamaPlan, false}, true
 		}
 	}
 	return planQuotaSource{}, false
@@ -577,6 +581,9 @@ func vendorSaid(b []byte, status string) string {
 		Message string          `json:"message"`
 	}
 	if json.Unmarshal(b, &e) != nil {
+		if said, ok := Unsaid(b); ok {
+			return status + ": " + said
+		}
 		return status
 	}
 	msg := e.Message
@@ -723,6 +730,10 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 	}
 	stepfun := make(chan []SubscriptionQuota, 1)
 	go func() { stepfun <- stepPlanQuotas(ctx) }()
+	volc := make(chan []SubscriptionQuota, 1)
+	go func() { volc <- volcPlanQuotas(ctx) }()
+	tencent := make(chan []SubscriptionQuota, 1)
+	go func() { tencent <- tencentPlanQuotas(ctx) }()
 	wg.Wait()
 	out := []SubscriptionQuota{}
 	for i, q := range got {
@@ -733,6 +744,8 @@ func PlanQuotas(ctx context.Context) []SubscriptionQuota {
 		}
 	}
 	out = append(out, <-stepfun...)
+	out = append(out, <-volc...)
+	out = append(out, <-tencent...)
 	if ctx.Err() == nil {
 		noteQuotaHistory(out, time.Now())
 		c.Lock()

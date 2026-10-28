@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Note is one release's notes, as the app shows them after an update.
@@ -23,21 +25,19 @@ type Note struct {
 	Pending bool `json:"pending,omitempty"`
 }
 
-// NotesFeed is where the notes of past releases are listed: this
-// repository's releases on GitHub. MAGPIE_NOTES_FEED points it elsewhere.
+// NotesFeed is where the notes of past releases are listed: beside the
+// update feed, on magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
 func NotesFeed() string {
 	if f := os.Getenv("MAGPIE_NOTES_FEED"); f != "" {
 		return f
 	}
-	return "https://api.github.com/repos/" + Repo + "/releases?per_page=100"
+	return Site + "/api/notes"
 }
 
-// githubNotes is whether feed is GitHub's releases list.
-func githubNotes(feed string) bool { return strings.Contains(feed, "api.github.com/repos/") }
-
-// ReleasePage is version's page on GitHub, where its notes are.
+// ReleasePage is version's page on GitHub, where its notes are when the
+// site can't give them (#661).
 func ReleasePage(version string) string {
-	return "https://github.com/" + Repo + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	return "https://github.com/yetone/magpie-releases/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 // NotesBetween asks the site for the notes of every release after after
@@ -73,14 +73,10 @@ func NotesBack(ctx context.Context, upto string, n int, lang string) ([]Note, er
 
 // askNotes is the site's list for q, each release's notes in lang.
 func askNotes(ctx context.Context, q url.Values, lang string) ([]Note, error) {
-	feed := NotesFeed()
-	if githubNotes(feed) {
-		return askGitHubNotes(ctx, q, lang)
-	}
 	if lang != "" {
 		q.Set("lang", lang)
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", feed+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", NotesFeed()+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -102,41 +98,6 @@ func askNotes(ctx context.Context, q url.Values, lang string) ([]Note, error) {
 		out.Releases[i].Notes = InLang(out.Releases[i].Notes, lang)
 	}
 	return out.Releases, nil
-}
-
-// askGitHubNotes asks GitHub's releases list for every published release
-// and reads it as Note list; GitHub has no upto/limit, so Between and Back
-// cut the list here.
-func askGitHubNotes(ctx context.Context, q url.Values, lang string) ([]Note, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", NotesFeed(), nil)
-	if err != nil {
-		return nil, err
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return nil, fmt.Errorf("release notes: %s", res.Status)
-	}
-	var rels []githubRelease
-	if err := json.NewDecoder(res.Body).Decode(&rels); err != nil {
-		return nil, fmt.Errorf("release notes: %w", err)
-	}
-	out := make([]Note, 0, len(rels))
-	for _, g := range rels {
-		if g.Draft || g.Prerelease || g.TagName == "" {
-			continue
-		}
-		n := Note{
-			Version: strings.TrimPrefix(g.TagName, "v"),
-			Notes:   InLang(g.Body, lang),
-			URL:     g.HTMLURL,
-		}
-		out = append(out, n)
-	}
-	return out, nil
 }
 
 // zhMarker is where a release's notes turn from English to Chinese: the
@@ -179,8 +140,46 @@ func withLang(feed, lang string) string {
 // often, and a long-unopened one would have pages of them.
 const MaxNotes = 40
 
+// StableMaxNotes is MaxNotes on the Stable channel, where an update is a
+// week of releases and its notes are read as one list (ssharpcc on X):
+// every one of them, as far as the site keeps them.
+const StableMaxNotes = 1500
+
+// MostNotes is how many releases' notes are shown at most on the channel
+// Settings name.
+func MostNotes() int {
+	if Stable() {
+		return StableMaxNotes
+	}
+	return MaxNotes
+}
+
+// Stable is whether Settings' Update channel is Stable: the update feed is
+// asked for a version a week, the newest that had been out three days as
+// the week began (Monday 00:00 UTC), or an urgent one (a security hole, a
+// ban risk, lost data) as soon as it is out. usemagpie.ai chooses it from
+// the release list (site/worker.js, "The Stable channel"); a release is
+// urgent when a line of its notes starts with "**Urgent release:**".
+func Stable() bool { return settings.Load().UpdateChannel == settings.UpdateStable }
+
+// withChannel is feed asking for Stable's release on the Stable channel,
+// and feed as it is on every version.
+func withChannel(feed string) string {
+	if !Stable() {
+		return feed
+	}
+	u, err := url.Parse(feed)
+	if err != nil {
+		return feed
+	}
+	q := u.Query()
+	q.Set("channel", settings.UpdateStable)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // Between keeps the notes of the releases after after up to and including
-// upto, newest first, at most MaxNotes; with after "" only upto's. Each
+// upto, newest first, at most MostNotes; with after "" only upto's. Each
 // one's Install section is taken out, and one left empty is dropped.
 func Between(notes []Note, after, upto string) []Note {
 	var out []Note
@@ -205,8 +204,8 @@ func Between(notes []Note, after, upto string) []Note {
 		out = append(out, n)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return Newer(out[i].Version, out[j].Version) })
-	if len(out) > MaxNotes {
-		out = out[:MaxNotes]
+	if most := MostNotes(); len(out) > most {
+		out = out[:most]
 	}
 	return out
 }

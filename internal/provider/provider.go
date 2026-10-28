@@ -60,7 +60,13 @@ type Provider struct {
 	Preset string `json:"preset,omitempty"` // preset this was created from, if any
 	Key    string `json:"key"`              // API key, as typed by the user
 
-	// Deprecated vendor-specific access keys, kept for backwards compatibility in JSON schema
+	// AccessKeyID and SecretAccessKey are a Volcengine account's access
+	// key (TakesVolcAccessKey), what Ark tells its Coding or Agent Plan's
+	// windows to (volcengine_usage.go), or a Tencent Cloud account's API
+	// key, its SecretId and SecretKey (TakesTencentAccessKey), what TokenHub
+	// tells Token Plan 企业版's usage to (tencent_usage.go); not the plan's
+	// inference key in Key. They are kept, backed up and synced as the keys are: the Secret
+	// is never sent to the GUI, and a backup without keys has neither.
 	AccessKeyID     string `json:"accessKeyID,omitempty"`
 	SecretAccessKey string `json:"secretAccessKey,omitempty"`
 
@@ -235,6 +241,17 @@ type Provider struct {
 	// fitting, which a backend that isn't OpenAI's needs (#350).
 	CodexAsSent bool `json:"codexAsSent,omitempty"`
 
+	// PromptAsWritten, on Antigravity's subscription, has the system prompt
+	// go to Google exactly as the agent wrote it. By default the few lines
+	// Google answers with a 429 "Resource has been exhausted" whatever
+	// quota is left (Claude Code's billing line, the Claude Agent SDK's
+	// identity line, Codex's GPT-5 identity lines, Hermes Agent's earlier
+	// default persona) go with a zero-width space inside them, which Google
+	// lets through and the model reads the same (gateway's
+	// antigravityCloak). Set with `magpie provider set antigravity
+	// prompt=as-written`; prompt=default turns it back.
+	PromptAsWritten bool `json:"promptAsWritten,omitempty"`
+
 	// AdditionalTools says the provider's Responses API takes an
 	// additional_tools input item, as OpenAI's does: a deferred tool an
 	// Anthropic client's tool search loaded goes to it in such an item
@@ -243,6 +260,16 @@ type Provider struct {
 	// without it; another vendor isn't unless this is set, since xAI's
 	// turns the item away (#350).
 	AdditionalTools bool `json:"additionalTools,omitempty"`
+
+	// Patience is how many seconds more a request to this provider alone,
+	// not through a group, may be kept once it has failed in a way that
+	// passes (overloaded, unavailable, rate limited for a moment) and the
+	// same-one retries are spent, as a group's Patience is (zoecats on
+	// Discord): 0 keeps it PatienceDefault, PatienceOff hands the agent
+	// the error at once, and it is at most PatienceLongest. Set with
+	// `magpie provider set <id> patience=`; a group it is in keeps the
+	// group's own.
+	Patience int `json:"patience,omitempty"`
 
 	// NativeCompaction has Codex's compaction_trigger go to the provider
 	// as Codex sent it, and the compaction the provider writes back go to
@@ -325,6 +352,17 @@ type Provider struct {
 	// and then the window's WindowCapID: 1–99, or 100 for none on it. A
 	// window not in it takes the account's AccountCaps.
 	AccountWindowCaps map[string]map[string]int `json:"accountWindowCaps,omitempty"`
+	// CapStop, for a subscription whose accounts are capped, ends there
+	// (plugins#349): while every account is held at its cap, a request is
+	// answered 429, as the vendor would, rather than sent on to Fallback.
+	// Off, the default, a fallback takes it. See gateway.Server.plan.
+	CapStop bool `json:"capStop,omitempty"`
+	// CapCareful is a capped account's usage read again before a request
+	// is sent near its cap, and the account held while its usage can't be
+	// told (plugins#349): unknown is not spent. Off, the default, routing
+	// goes by the last reading, read again each minute. See
+	// gateway.carefulDoubt.
+	CapCareful bool `json:"capCareful,omitempty"`
 	// AccountNames is, for a subscription, the name the user gave each
 	// account they named (#1515: a team's seats told apart by who holds
 	// them, not by a masked email), by the account's name in lower case.
@@ -460,11 +498,9 @@ type file struct {
 	// when it was removed and put back when it is added again (#2057; see
 	// plugin_left.go).
 	PluginLeft []LeftRecord `json:"pluginLeft,omitempty"`
-}
-
-// AccessKeyVendor returns empty string as vendor-specific access keys are retired.
-func AccessKeyVendor(p Provider) string {
-	return ""
+	// Deleted are the providers the user deleted, so the calls made to
+	// one stay its own when another is added under its id (Renames).
+	Deleted []Deleted `json:"deleted,omitempty"`
 }
 
 // Path is the file the user's providers live in.
@@ -709,8 +745,10 @@ func withPicks(a, pk Provider) Provider {
 	a.SwitchOnly = pk.SwitchOnly
 	a.Sink, a.NoModels = pk.Sink, pk.NoModels
 	a.NativeCompaction = pk.NativeCompaction
+	a.PromptAsWritten = pk.PromptAsWritten
 	a.Proxy, a.AccountProxies, a.AccountModels = pk.Proxy, pk.AccountProxies, pk.AccountModels
 	a.AccountCaps, a.AccountWindowCaps = pk.AccountCaps, pk.AccountWindowCaps
+	a.CapStop, a.CapCareful = pk.CapStop, pk.CapCareful
 	a.AccountNames = pk.AccountNames
 	a.MaxConcurrency, a.PinUpstream = pk.MaxConcurrency, pk.PinUpstream
 	a.AccountConcurrency, a.QueueLimit, a.QueueWait = pk.AccountConcurrency, pk.QueueLimit, pk.QueueWait
@@ -845,7 +883,7 @@ func Save(p Provider) error {
 		if p.ID == "kiro" {
 			key = p.Key
 		}
-		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
+		p = Provider{ID: p.ID, Key: key, Models: p.Models, NoModels: p.NoModels, PickedFrom: p.PickedFrom, Delisted: p.Delisted, Unlisted: p.Unlisted, Off: p.Off, Fallback: p.Fallback, Routing: p.Routing, Sink: p.Sink, Affinity: p.Affinity, KeepLogin: p.KeepLogin, KeepLoginAs: p.KeepLoginAs, SwitchOnly: p.SwitchOnly, Contexts: p.Contexts, Family: p.Family, Proxy: p.Proxy, AccountProxies: p.AccountProxies, AccountModels: p.AccountModels, AccountCaps: p.AccountCaps, AccountWindowCaps: p.AccountWindowCaps, CapStop: p.CapStop, CapCareful: p.CapCareful, AccountNames: p.AccountNames, MaxConcurrency: p.MaxConcurrency, AccountConcurrency: p.AccountConcurrency, QueueLimit: p.QueueLimit, QueueWait: p.QueueWait, MaxRPM: p.MaxRPM, QuotaRest: p.QuotaRest, QuotaResetAt: p.QuotaResetAt, RestCap: p.RestCap, PinUpstream: p.PinUpstream, NativeCompaction: p.NativeCompaction, PromptAsWritten: p.PromptAsWritten, Hidden: hiddenAccount(p.ID), Quiet: quietAccount(p.ID), Tucked: tuckedAccount(p.ID)}
 	} else {
 		p.AccountProxies = keyProxies(p) // a provider of keys proxies each key apart
 		if subscriptionID(p.ID) && !stored(p.ID) {
@@ -1225,6 +1263,9 @@ func Delete(id string) error {
 	for _, p := range f.Providers {
 		if p.ID == id {
 			found = true
+			// its calls stay its own, not a provider's added later under
+			// its id (cybercaius on Discord)
+			f.Deleted = append(f.Deleted, Deleted{ID: p.ID, Name: p.Name, Icon: p.Icon, At: time.Now(), Was: slices.Clone(p.Was), Gave: slices.Clone(p.Gave)})
 			continue
 		}
 		keep = append(keep, p)
@@ -1253,6 +1294,10 @@ func keyOptional(p Provider) bool {
 func normalize(p Provider) Provider {
 	p.ID = strings.ToLower(strings.TrimSpace(p.ID))
 	p.Name = strings.TrimSpace(p.Name)
+	if p.Patience < 0 {
+		p.Patience = PatienceOff
+	}
+	p.Patience = min(p.Patience, PatienceLongest)
 	p.Key = strings.TrimSpace(p.Key)
 	p.Proxy = strings.TrimSpace(p.Proxy)
 	p.AccountProxies = normalAccountProxies(p.AccountProxies)
@@ -1328,7 +1373,7 @@ func normalize(p Provider) Provider {
 	if (p.Preset == OMLXPreset || p.Preset == MLXServePreset || p.Preset == "ollama" || p.Preset == "ollama-cloud") && p.Decide == "" && p.Chat != "" {
 		p.Decide = p.Chat
 	}
-	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && p.Routing != FreeFirst && !PluginRouting(p.Routing) {
+	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && p.Routing != FreeFirst && p.Routing != Fastest && !PluginRouting(p.Routing) {
 		p.Routing = ""
 	}
 	if !slices.Contains(Affinities, p.Affinity) {
