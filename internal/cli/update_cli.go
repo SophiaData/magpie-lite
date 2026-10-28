@@ -51,6 +51,10 @@ func updateAutoCmd(args []string) error {
 			return err
 		}
 	}
+	if update.AutoUpdateDisabled {
+		fmt.Println("automatic updates are off in this build", muted.Render("· magpie update or Settings' Check looks for one"))
+		return nil
+	}
 	every := "6h"
 	for k, m := range updateEveries {
 		if m == s.UpdateEvery {

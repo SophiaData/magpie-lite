@@ -38,16 +38,32 @@ import (
 	"github.com/yetone/magpie/internal/source"
 )
 
-// Site is magpie's home; its /api/latest is the update feed.
-const Site = "https://usemagpie.ai"
+// Site is this build's home: the GitHub repository its releases are
+// published in.
+const Site = "https://github.com/gtk96/magpie"
 
-// Feed is where the newest release is described. MAGPIE_UPDATE_FEED points
-// it elsewhere, for testing an update against a local server.
+// Repo is the GitHub repository (owner/name) this build's releases and
+// notes come from.
+const Repo = "gtk96/magpie"
+
+// AutoUpdateDisabled is this build's own choice: it never asks for a newer
+// version by itself, on any setting. A check the user asks for (Settings'
+// Check, `magpie update`) still works.
+const AutoUpdateDisabled = true
+
+// feedAsset is a file this build's newest release carries: release.yml
+// builds the update feed and the notes feed beside the binaries, so
+// releases/latest/download always serves the newest one.
+const feedAsset = "https://github.com/" + Repo + "/releases/latest/download/"
+
+// Feed is where the newest release is described, in this build's own
+// releases. MAGPIE_UPDATE_FEED points it elsewhere, for testing an update
+// against a local server.
 func Feed() string {
 	if f := os.Getenv("MAGPIE_UPDATE_FEED"); f != "" {
 		return f
 	}
-	return Site + "/api/latest"
+	return feedAsset + "feed.json"
 }
 
 // Release is one published version.
