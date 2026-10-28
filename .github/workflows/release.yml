@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -186,7 +187,7 @@ jobs:
           ok=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=20" \
                 --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
           if [ "$ok" -eq 0 ]; then
-            echo "Test has not passed on $GITHUB_SHA; a release waits for a green run" >&2
+            echo "Test has not passed on $GITHUB_SHA; this refuses to publish until it does" >&2
             exit 1
           fi
 
@@ -198,7 +199,7 @@ jobs:
           # shows a half-uploaded set to `releases/latest/download`.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
-            gh release edit "$TAG" --notes-file notes.md --latest
+            gh release edit "$TAG" --draft=false --notes-file notes.md --latest
           else
             gh release create "$TAG" --draft --title "magpie $TAG" --notes-file notes.md --target main
             gh release upload "$TAG" dist/*

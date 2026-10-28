@@ -63,6 +63,10 @@ successful Test run for the same commit.
 - **No Stable channel.** The feed is the static `feed.json` of the newest
   release, which carries one release whatever channel is asked for: Stable
   lists the same newest release as every channel.
+- **No switch for the automatic-update row.** Settings still shows it as set
+  (On, every six hours) although this build never checks by itself; the row
+  is upstream's and hiding it would be a GUI change of its own. `magpie
+  update auto` says the truth when asked.
 
 ## Building and installing here
 
