@@ -121,14 +121,14 @@ jobs:
             echo
             echo "Built from $GITHUB_REPOSITORY at ${GITHUB_SHA::12}."
             echo
+            echo "Automatic updates are off in this build: nothing is checked,"
+            echo "downloaded or installed by itself. Ask for a check from"
+            echo "Settings' Check, or run \`magpie update\`."
+            echo
             echo "## Install"
             echo
             echo "Download \`magpie-windows-amd64.exe\` (desktop app) or"
             echo "\`magpie-cli-windows-amd64.exe\` (terminal build)."
-            echo
-            echo "Automatic updates are off in this build: nothing is checked,"
-            echo "downloaded or installed by itself. Ask for a check from"
-            echo "Settings' Check, or run \`magpie update\`."
           } > notes.md
 
       - name: Build feed.json and notes.json
@@ -180,14 +180,28 @@ jobs:
               json.dumps({"releases": releases}, ensure_ascii=False, indent=1))
           PY
 
+      - name: Test passed on this commit
+        run: |
+          set -euo pipefail
+          ok=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=20" \
+                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "$ok" -eq 0 ]; then
+            echo "Test has not passed on $GITHUB_SHA; a release waits for a green run" >&2
+            exit 1
+          fi
+
       - name: Publish the release
         run: |
           set -euo pipefail
           ls -l dist
+          # A draft first, every asset uploaded, then Latest: a release never
+          # shows a half-uploaded set to `releases/latest/download`.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
             gh release edit "$TAG" --notes-file notes.md --latest
           else
-            gh release create "$TAG" dist/* --title "magpie $TAG" --notes-file notes.md --target main --latest
+            gh release create "$TAG" --draft --title "magpie $TAG" --notes-file notes.md --target main
+            gh release upload "$TAG" dist/*
+            gh release edit "$TAG" --draft=false --notes-file notes.md --latest
           fi
           gh release view "$TAG" --json assets -q '.assets[].name'
