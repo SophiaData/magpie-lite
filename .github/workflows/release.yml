@@ -127,11 +127,14 @@ jobs:
           test "$(go env GOARCH)" = "$ARCH"
           make release-darwin VERSION="$VERSION"
           test -f "dist/magpie-darwin-$ARCH.zip"
+          test -f "dist/magpie-darwin-$ARCH.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
-          path: dist/magpie-darwin-${{ matrix.arch }}.zip
+          path: |
+            dist/magpie-darwin-${{ matrix.arch }}.zip
+            dist/magpie-darwin-${{ matrix.arch }}.dmg
           if-no-files-found: error
 
   publish:
@@ -164,8 +167,12 @@ jobs:
             echo
             echo "Download \`magpie-windows-amd64.exe\` (Windows desktop),"
             echo "\`magpie-darwin-arm64.zip\` (Apple silicon) or \`magpie-darwin-amd64.zip\` (Intel Mac)."
+            echo "On macOS, the \`.dmg\` files are for a drag-to-Applications install;"
+            echo "\`magpie update\` fetches the \`.zip\`."
             echo "Terminal builds use \`magpie-cli-<os>-<arch>\`."
-            echo "The macOS app is ad-hoc signed and not notarized; first launch may require right-click > Open."
+            echo "The macOS app is ad-hoc signed and not notarized; first launch may"
+            echo "need Gatekeeper approval (right-click > Open, or System Settings >"
+            echo "Privacy & Security > Open Anyway)."
           } > notes.md
 
       - name: Build feed.json and notes.json

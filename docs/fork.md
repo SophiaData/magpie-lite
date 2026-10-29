@@ -74,7 +74,9 @@ successful Test run for the same commit.
 Go 1.26.8 as `go.mod` says. On Windows, `make release-windows
 VERSION=v0.2.N` builds the desktop app with `CGO_ENABLED=0` (no GTK). On a
 macOS runner, `make release-darwin VERSION=v0.2.N` builds and ad-hoc signs
-`dist/magpie-darwin-<arch>.zip`; it is not Developer ID signed or notarized.
+`dist/magpie-darwin-<arch>.zip` (what `magpie update` fetches) and a
+`magpie-darwin-<arch>.dmg` with a drag-to-Applications layout for manual
+installs; neither is Developer ID signed or notarized.
 `make release-cli TARGETS="windows/amd64 linux/amd64" VERSION=v0.2.N`
 builds terminal versions. Linux desktop builds with `make release-linux` and
 needs GTK 3 plus WebKitGTK 4.1.
