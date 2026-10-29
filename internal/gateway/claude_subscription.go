@@ -132,6 +132,9 @@ type subscriptionRun struct {
 	model  string
 	cmd    *exec.Cmd
 	tree   *proc.Tree // cmd once started, with all it starts
+	// pidv is cmd's process id once launch has started it, 0 before: pid()
+	// reads it without r.mu, as Start writes the command's own fields
+	pidv atomic.Int64
 	// the read ends of Claude Code's output, and their readers
 	outputs []*os.File
 	reading sync.WaitGroup
@@ -3874,6 +3877,7 @@ func (r *subscriptionRun) launch() error {
 	if err != nil {
 		return err
 	}
+	r.pidv.Store(int64(r.cmd.Process.Pid))
 	exited := make(chan struct{})
 	r.mu.Lock()
 	r.tree, r.exited = t, exited

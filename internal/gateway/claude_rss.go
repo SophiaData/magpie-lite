@@ -83,12 +83,10 @@ func (r *subscriptionRun) oversized(share int64) (string, bool) {
 	return fmt.Sprintf("its Claude Code held %d MiB, over the %d MiB a run may hold to be kept (%s)", rss>>20, budget>>20, why), true
 }
 
-// pid is the run's Claude Code process id, 0 before it starts.
+// pid is the run's Claude Code process id, 0 before it starts. It reads the
+// id launch kept rather than the command's own fields, which Start writes.
 func (r *subscriptionRun) pid() int {
-	if r.cmd == nil || r.cmd.Process == nil {
-		return 0
-	}
-	return r.cmd.Process.Pid
+	return int(r.pidv.Load())
 }
 
 // letGoOversized lets go of a run whose turn was whole and that holds too
