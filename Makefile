@@ -82,7 +82,8 @@ release-darwin:
 	@codesign --verify --deep --strict dist/magpie.app
 	@ditto -c -k --sequesterRsrc --keepParent dist/magpie.app dist/magpie-darwin-$(shell go env GOARCH).zip
 	@rm -rf dist/magpie-dmg && mkdir -p dist/magpie-dmg
-	@cp -R dist/magpie.app dist/magpie-dmg/magpie.app
+	@ditto dist/magpie.app dist/magpie-dmg/magpie.app
+	@codesign --verify --deep --strict dist/magpie-dmg/magpie.app
 	@ln -s /Applications dist/magpie-dmg/Applications
 	@hdiutil create -volname "magpie $(or $(DARWINVER),0.0.0)" -srcfolder dist/magpie-dmg -ov -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
 	@rm -rf dist/magpie-dmg

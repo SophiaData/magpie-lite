@@ -25,11 +25,12 @@ one diff to carry to the next upstream version.
   names a list, so the add sheet shows no "Partners · magpie's sponsors".
 - **This repository's release workflow.** `.github/workflows/release.yml`
   builds the Windows, Linux and macOS apps and the terminal builds here, and
-  publishes them with the `feed.json` and `notes.json` this build reads. The
-  release is created as a draft, every asset is uploaded, and only then is
-  it made Latest (so `releases/latest/download` never serves half a
-  release), and the workflow refuses to publish unless Test passed on the
-  same commit.
+  publishes them with the `feed.json` and `notes.json` this build reads. Each
+  macOS build produces a `zip` for `magpie update` and a `dmg` for a manual
+  drag-to-Applications install. The release is created as a draft, every
+  asset is uploaded, and only then is it made Latest (so
+  `releases/latest/download` never serves half a release), and the workflow
+  refuses to publish unless Test passed on the same commit.
 
 ## Taking an upstream version
 

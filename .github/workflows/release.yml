@@ -128,6 +128,14 @@ jobs:
           make release-darwin VERSION="$VERSION"
           test -f "dist/magpie-darwin-$ARCH.zip"
           test -f "dist/magpie-darwin-$ARCH.dmg"
+          hdiutil verify "dist/magpie-darwin-$ARCH.dmg"
+          MNT="$RUNNER_TEMP/dmg"
+          mkdir -p "$MNT"
+          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "dist/magpie-darwin-$ARCH.dmg"
+          test -x "$MNT/magpie.app/Contents/MacOS/magpie"
+          test -L "$MNT/Applications"
+          codesign --verify --deep --strict "$MNT/magpie.app"
+          hdiutil detach "$MNT"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -165,10 +173,10 @@ jobs:
             echo
             echo "## Install"
             echo
-            echo "Download \`magpie-windows-amd64.exe\` (Windows desktop),"
-            echo "\`magpie-darwin-arm64.zip\` (Apple silicon) or \`magpie-darwin-amd64.zip\` (Intel Mac)."
-            echo "On macOS, the \`.dmg\` files are for a drag-to-Applications install;"
-            echo "\`magpie update\` fetches the \`.zip\`."
+            echo "Download \`magpie-windows-amd64.exe\` (Windows desktop)."
+            echo "On macOS, \`magpie-darwin-arm64.dmg\` (Apple silicon) or"
+            echo "\`magpie-darwin-amd64.dmg\` (Intel) is a drag-to-Applications install;"
+            echo "\`magpie update\` fetches the matching \`.zip\`."
             echo "Terminal builds use \`magpie-cli-<os>-<arch>\`."
             echo "The macOS app is ad-hoc signed and not notarized; first launch may"
             echo "need Gatekeeper approval (right-click > Open, or System Settings >"
