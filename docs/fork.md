@@ -24,7 +24,7 @@ one diff to carry to the next upstream version.
 - **No partners.** `partnersSource` keeps to none unless `MAGPIE_PARTNERS`
   names a list, so the add sheet shows no "Partners · magpie's sponsors".
 - **This repository's release workflow.** `.github/workflows/release.yml`
-  builds the Windows and Linux apps and the terminal builds here, and
+  builds the Windows, Linux and macOS apps and the terminal builds here, and
   publishes them with the `feed.json` and `notes.json` this build reads. The
   release is created as a draft, every asset is uploaded, and only then is
   it made Latest (so `releases/latest/download` never serves half a
@@ -57,9 +57,9 @@ successful Test run for the same commit.
 
 ## What this fork does not do
 
-- **No macOS desktop app.** `AppAsset()` names `magpie-darwin-<arch>.zip`,
-  and the release workflow builds only the terminal binary for macOS; a
-  macOS desktop build cannot update itself from here.
+- **No Developer ID signature or notarization.** The macOS app is ad-hoc
+  signed so updates can verify the same signature team. Gatekeeper may still
+  require the user to right-click the app and choose Open on first launch.
 - **No Stable channel.** The feed is the static `feed.json` of the newest
   release, which carries one release whatever channel is asked for: Stable
   lists the same newest release as every channel.
@@ -70,9 +70,13 @@ successful Test run for the same commit.
 
 ## Building and installing here
 
-Go 1.26.8 as `go.mod` says, `CGO_ENABLED=0`; the Windows desktop build needs
-no GTK. `make release-windows VERSION=v0.2.N` and `make release-cli
-TARGETS="windows/amd64 linux/amd64" VERSION=v0.2.N` write into `dist/`.
+Go 1.26.8 as `go.mod` says. On Windows, `make release-windows
+VERSION=v0.2.N` builds the desktop app with `CGO_ENABLED=0` (no GTK). On a
+macOS runner, `make release-darwin VERSION=v0.2.N` builds and ad-hoc signs
+`dist/magpie-darwin-<arch>.zip`; it is not Developer ID signed or notarized.
+`make release-cli TARGETS="windows/amd64 linux/amd64" VERSION=v0.2.N`
+builds terminal versions. Linux desktop builds with `make release-linux` and
+needs GTK 3 plus WebKitGTK 4.1.
 
 To put a build in use:
 

@@ -1,7 +1,7 @@
 name: Release
 
-# Build this fork's own release here: the Windows and Linux desktop builds
-# and the terminal-only builds, published on this repository's Releases
+# Build this fork's own release here: the Windows, Linux and macOS desktop
+# builds and the terminal-only builds, published on this repository's Releases
 # page. This build reads and installs its updates from there
 # (internal/update): feed.json and notes.json are built beside the binaries
 # and attached to every release, and releases/latest/download serves them.
@@ -100,8 +100,42 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  macos:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: amd64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the desktop app bundle
+        env:
+          VERSION: v${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(go env GOOS)" = darwin
+          test "$(go env GOARCH)" = "$ARCH"
+          make release-darwin VERSION="$VERSION"
+          test -f "dist/magpie-darwin-$ARCH.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/magpie-darwin-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
   publish:
-    needs: [version, windows, linux]
+    needs: [version, windows, linux, macos]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -128,8 +162,10 @@ jobs:
             echo
             echo "## Install"
             echo
-            echo "Download \`magpie-windows-amd64.exe\` (desktop app) or"
-            echo "\`magpie-cli-windows-amd64.exe\` (terminal build)."
+            echo "Download \`magpie-windows-amd64.exe\` (Windows desktop),"
+            echo "\`magpie-darwin-arm64.zip\` (Apple silicon) or \`magpie-darwin-amd64.zip\` (Intel Mac)."
+            echo "Terminal builds use \`magpie-cli-<os>-<arch>\`."
+            echo "The macOS app is ad-hoc signed and not notarized; first launch may require right-click > Open."
           } > notes.md
 
       - name: Build feed.json and notes.json
