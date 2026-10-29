@@ -21,8 +21,10 @@ one diff to carry to the next upstream version.
   `NotesFeed`, `ReleasePage`), and `AutoUpdateDisabled` keeps automatic
   checks, downloads and restarts off: `magpie update` and Settings' Check
   are the ways an update happens.
-- **No partners.** `partnersSource` keeps to none unless `MAGPIE_PARTNERS`
-  names a list, so the add sheet shows no "Partners · magpie's sponsors".
+- **No partners.** The partner list is not offered at all rather than
+  switched off: `partnersSource` answers none whatever the environment
+  says, so no list is fetched and the add sheet has no
+  "Partners · magpie's sponsors" section.
 - **This repository's release workflow.** `.github/workflows/release.yml`
   builds the Windows, Linux and macOS apps and the terminal builds here, and
   publishes them with the `feed.json` and `notes.json` this build reads. Each

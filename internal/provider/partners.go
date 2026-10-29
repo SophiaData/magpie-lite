@@ -29,8 +29,8 @@ import (
 // is, and kept on disk. A partner is a preset in all but where it comes
 // from, so adding one, its editor and its key page work as a preset's do.
 
-// PartnersURL is where the list is kept; MAGPIE_PARTNERS moves it, and
-// MAGPIE_PARTNERS=off keeps to none.
+// PartnersURL is where upstream keeps the list. This build lists none: it
+// is not a setting, so no list is fetched and nothing turns one on.
 const PartnersURL = "https://usemagpie.ai/api/partners"
 
 // KindPartner is a partner's Kind: the add sheet lists them apart.
@@ -105,12 +105,10 @@ var partnerID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,40}$`)
 
 func partnerCacheFile() string { return filepath.Join(appdir.Cache(), "partners.json") }
 
+// partnersSource says where a list would come from, and this build has
+// none: it is not a setting, the environment cannot name a list, and every
+// reader below keeps to none because of it.
 func partnersSource() string {
-	// This build lists no partners: an unset MAGPIE_PARTNERS keeps to
-	// none, and the variable can still point at a list of one's own.
-	if src := os.Getenv("MAGPIE_PARTNERS"); src != "" {
-		return src
-	}
 	return "off"
 }
 
