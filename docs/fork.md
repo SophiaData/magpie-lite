@@ -58,7 +58,8 @@ successful Test run for the same commit.
 ## What this fork does not do
 
 - **No Developer ID signature or notarization.** The macOS app is ad-hoc
-  signed so updates can verify the same signature team. Gatekeeper may still
+  signed. Updates verify the feed SHA-256 and code-signature integrity, but
+  an ad-hoc signature does not identify a developer or team. Gatekeeper may
   require the user to right-click the app and choose Open on first launch.
 - **No Stable channel.** The feed is the static `feed.json` of the newest
   release, which carries one release whatever channel is asked for: Stable
