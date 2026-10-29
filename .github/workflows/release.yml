@@ -128,7 +128,16 @@ jobs:
           make release-darwin VERSION="$VERSION"
           test -f "dist/magpie-darwin-$ARCH.zip"
           test -f "dist/magpie-darwin-$ARCH.dmg"
-          hdiutil verify "dist/magpie-darwin-$ARCH.dmg"
+          # verify can answer "Resource temporarily unavailable" right after
+          # the image is written, so give it a few tries; the mount below is
+          # what holds the image to its contents.
+          verified=no
+          for try in 1 2 3; do
+            if hdiutil verify "dist/magpie-darwin-$ARCH.dmg"; then verified=yes; break; fi
+            echo "hdiutil verify failed (try $try)"
+            sleep 5
+          done
+          test "$verified" = yes
           MNT="$RUNNER_TEMP/dmg"
           mkdir -p "$MNT"
           hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "dist/magpie-darwin-$ARCH.dmg"
