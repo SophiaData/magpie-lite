@@ -331,6 +331,9 @@ func NoticePartners(ids ...string) {
 
 // PartnerNoticed reports whether the user has been shown the partner id.
 func PartnerNoticed(id string) bool {
+	if partnersSource() == "off" {
+		return false
+	}
 	partnerMu.Lock()
 	defer partnerMu.Unlock()
 	loadPartners()
