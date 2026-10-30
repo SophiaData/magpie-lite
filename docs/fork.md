@@ -1,15 +1,15 @@
 # This fork
 
 `gtk96/magpie` builds [yetone/magpie](https://github.com/yetone/magpie) and
-publishes and updates from this repository's Releases. It has three changes
-of its own; everything else is upstream's.
+publishes and updates from this repository's Releases. What it changes is
+listed below; everything else is upstream's.
 
 ## The commits
 
 Each upstream version starts from a baseline commit on `main`:
 
 - `upstream: vX.Y.Z` — the tree of that upstream tag.
-- `fork: ...` — the three changes below, in one or more commits after it.
+- `fork: ...` — the changes below, in one or more commits after it.
 
 The fork's own patch is therefore `git diff <last upstream commit>..HEAD`:
 one diff to carry to the next upstream version.
@@ -29,13 +29,23 @@ one diff to carry to the next upstream version.
   builds the Windows, Linux and macOS apps and the terminal builds here, and
   publishes them with the `feed.json` and `notes.json` this build reads. Each
   macOS build produces a `zip` for `magpie update` and a `dmg` for a manual
-  drag-to-Applications install. The release is created as a draft, every
-  asset is uploaded, and only then is it made Latest (so
-  `releases/latest/download` never serves half a release), and the workflow
-  refuses to publish unless Test passed on the same commit. Test is
-  `.github/workflows/test.yml`, which runs the suite on ubuntu and Windows;
-  the macOS runner runs it in `test-macos.yml`, daily and when asked, as it
-  takes about half an hour there and is not waited for.
+  drag-to-Applications install: the app is copied into a fixed-size image and
+  that copy's signature is verified before the image is compressed, as
+  `hdiutil create -srcfolder` sized its own image by guess on one runner and
+  filled it. The release is created as a draft, every asset is uploaded, and
+  only then is it made Latest (so `releases/latest/download` never serves
+  half a release), and the workflow refuses to publish unless Test passed on
+  the same commit.
+- **Test on ubuntu and Windows; macOS on a schedule.** The suite runs on
+  ubuntu and Windows in `test.yml`, and on a macOS runner in `test-macos.yml`
+  daily and when asked, as it takes about half an hour there and a release
+  waits for `test.yml`'s run. `docker.yml` runs only when asked, so a push
+  publishes no Docker image.
+- **A held request's report names the wait it was in.** The 504 goes out
+  before the report is written and the client closes it at once, which ends
+  the waits: the report takes what the request was waiting in before the
+  answer, so a request still waiting for its image description says
+  "(under way)".
 
 ## Taking an upstream version
 
@@ -46,7 +56,7 @@ git commit -m "upstream: v0.1.NNNN"
 git diff <last upstream commit>..<previous HEAD> | git apply -3
 ```
 
-`-3` leaves the three changes as conflicts where upstream moved under them;
+`-3` leaves the changes as conflicts where upstream moved under them;
 resolve them, then run what a release needs:
 
 ```sh
