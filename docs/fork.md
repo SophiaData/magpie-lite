@@ -1,6 +1,6 @@
 # This fork
 
-`gtk96/magpie` builds [yetone/magpie](https://github.com/yetone/magpie) and
+`gtk96/magpie-lite` builds [yetone/magpie](https://github.com/yetone/magpie) and
 publishes and updates from this repository's Releases. What it changes is
 listed below; everything else is upstream's.
 
