@@ -82,12 +82,15 @@ release-darwin:
 	@codesign --force --deep --sign - --timestamp=none dist/magpie.app
 	@codesign --verify --deep --strict dist/magpie.app
 	@ditto -c -k --sequesterRsrc --keepParent dist/magpie.app dist/magpie-darwin-$(shell go env GOARCH).zip
-	@rm -rf dist/magpie-dmg && mkdir -p dist/magpie-dmg
-	@ditto dist/magpie.app dist/magpie-dmg/magpie.app
-	@codesign --verify --deep --strict dist/magpie-dmg/magpie.app
-	@ln -s /Applications dist/magpie-dmg/Applications
-	@hdiutil create -volname "magpie $(or $(DARWINVER),0.0.0)" -srcfolder dist/magpie-dmg -ov -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
-	@rm -rf dist/magpie-dmg
+	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt && mkdir -p dist/magpie-mnt
+	@hdiutil create -size 4g -fs HFS+ -volname "magpie $(or $(DARWINVER),0.0.0)" -ov -type UDIF dist/magpie-rw.dmg
+	@hdiutil attach -nobrowse -readwrite -mountpoint dist/magpie-mnt dist/magpie-rw.dmg
+	@ditto dist/magpie.app dist/magpie-mnt/magpie.app
+	@codesign --verify --deep --strict dist/magpie-mnt/magpie.app
+	@ln -s /Applications dist/magpie-mnt/Applications
+	@hdiutil detach dist/magpie-mnt
+	@hdiutil convert dist/magpie-rw.dmg -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
+	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt
 
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png
