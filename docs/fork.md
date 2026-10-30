@@ -32,7 +32,10 @@ one diff to carry to the next upstream version.
   drag-to-Applications install. The release is created as a draft, every
   asset is uploaded, and only then is it made Latest (so
   `releases/latest/download` never serves half a release), and the workflow
-  refuses to publish unless Test passed on the same commit.
+  refuses to publish unless Test passed on the same commit. Test is
+  `.github/workflows/test.yml`, which runs the suite on ubuntu and Windows;
+  the macOS runner runs it in `test-macos.yml`, daily and when asked, as it
+  takes about half an hour there and is not waited for.
 
 ## Taking an upstream version
 
@@ -56,7 +59,8 @@ go test -tags nogui ./...                    # -timeout 45m; CI runs it too
 
 Commit the result (`fork: ...`), push `main`, trigger Test on that commit,
 and release only once its run is green: the Release workflow needs a
-successful Test run for the same commit.
+successful Test run for the same commit. That run is ubuntu and Windows; run
+Test (macOS) by hand when the change touches something a Mac would catch.
 
 ## What this fork does not do
 

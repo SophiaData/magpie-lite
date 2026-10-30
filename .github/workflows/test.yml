@@ -21,8 +21,11 @@ jobs:
     name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
+      # macOS runs the same suite in test-macos.yml, on a schedule and when
+      # asked: its runner takes twice as long as ubuntu's, and a release
+      # waits for this workflow's run on the commit it publishes.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
 
     steps:
