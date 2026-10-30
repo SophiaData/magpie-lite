@@ -40,11 +40,11 @@ import (
 
 // Site is this build's home: the GitHub repository its releases are
 // published in.
-const Site = "https://github.com/gtk96/magpie-lite"
+const Site = "https://github.com/SophiaData/magpie-lite"
 
 // Repo is the GitHub repository (owner/name) this build's releases and
 // notes come from.
-const Repo = "gtk96/magpie-lite"
+const Repo = "SophiaData/magpie-lite"
 
 // AutoUpdateDisabled is this build's own choice: it never asks for a newer
 // version by itself, on any setting. A check the user asks for (Settings'

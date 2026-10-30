@@ -1,7 +1,7 @@
 name: Docker
 
 # This fork publishes no Docker image: pushing one would put it under
-# ghcr.io/gtk96/magpie-lite, which this repository does not maintain. Run it
+# ghcr.io/SophiaData/magpie-lite, which this repository does not maintain. Run it
 # by hand to check the image builds and starts.
 on:
   workflow_dispatch:
