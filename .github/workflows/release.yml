@@ -118,6 +118,15 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The Intel runner ran out of space while hdiutil wrote the dmg (this
+      # tree's build is large): the build cache is what fills it, and the
+      # build makes it again.
+      - name: Free disk space
+        run: |
+          df -h /
+          go clean -cache
+          df -h /
+
       - name: Build the desktop app bundle
         env:
           VERSION: v${{ needs.version.outputs.version }}
