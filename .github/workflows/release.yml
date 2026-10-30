@@ -118,19 +118,21 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # The Intel runner ran out of space while hdiutil wrote the dmg (this
-      # tree's build is large): the build cache is what fills it, and the
-      # build makes it again.
+      # The Intel runner answered "No space left on device" to hdiutil while
+      # the root volume showed room: hdiutil works in TMPDIR, so keep that
+      # on the workspace's volume, and the build cache is what fills a disk.
       - name: Free disk space
         run: |
-          df -h /
+          df -h
+          echo "TMPDIR=$TMPDIR"
           go clean -cache
-          df -h /
+          df -h
 
       - name: Build the desktop app bundle
         env:
           VERSION: v${{ needs.version.outputs.version }}
           ARCH: ${{ matrix.arch }}
+          TMPDIR: ${{ runner.temp }}
         run: |
           test "$(go env GOOS)" = darwin
           test "$(go env GOARCH)" = "$ARCH"
