@@ -59,6 +59,10 @@ git diff <last upstream commit>..<previous HEAD> | git apply -3
 `-3` leaves the changes as conflicts where upstream moved under them;
 resolve them, then run what a release needs:
 
+`README.md` and `README.zh-CN.md` are this fork's: upstream's describe a
+download from its own site and its sponsors, so a conflict there is resolved
+with this fork's version kept.
+
 ```sh
 gofmt -l $(git diff --name-only HEAD)
 go vet -tags nogui ./...                     # GOOS=windows and GOOS=linux
