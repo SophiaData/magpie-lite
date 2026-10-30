@@ -542,6 +542,9 @@ func (u *unroutedHold) giveUp(unknown bool) {
 	case u.masking.Load() > 0:
 		where = " masking it"
 	}
+	// what it waited in is taken before the 504 lets the request go: the
+	// client closes the answer at once, and that ends the waits it was in
+	waits := u.waitsSaid()
 	if !u.w.answer(unroutedProto(u.r.URL.Path), http.StatusGatewayTimeout, msg) {
 		f.mu.Unlock()
 		return // the handler is answering
@@ -560,7 +563,7 @@ func (u *unroutedHold) giveUp(unknown bool) {
 	asked, _ := u.asked.Load().(string)
 	who := cmpOr(u.agent, cmpOr(f.agent, "?"))
 	where = cmpOr(where, " not masking it")
-	report := u.s.heldReport(u, held, who, asked, where)
+	report := u.s.heldReport(u, held, who, asked, where, waits)
 	u.cancel(errUnrouted)
 	name, err := writeHeld(report)
 	saved := ""
