@@ -72,6 +72,7 @@ func served(rest, key string, tokens int) {
 	delete(routed.failures, rest)
 	routed.Unlock()
 	clearRest(key)
+	probeAnswered(key)
 }
 
 // servedCandidate records an answer and ends both the provider's rest and,
@@ -299,6 +300,9 @@ const (
 	// failFloor: the request asked for a shorter reply than the provider
 	// gives, and is sent again asking for the least it takes
 	failFloor = "floor"
+	// failSight: the model turned an image away (imageRefused), and is
+	// asked again with the request's images described (refuseSight)
+	failSight = "sight"
 	// failUpdate: the upstream turned away the configuration_update items
 	// a changed effort went as (#617), and the request is sent again
 	// without them
@@ -567,6 +571,10 @@ type Rest struct {
 	Model string `json:"model,omitempty"`
 	// Link: where the vendor said to verify the account, for failVerify
 	Link string `json:"link,omitempty"`
+	// Probed: a key resting after an outage that names no time (a 5xx, its
+	// vendor unreachable) is asked again in the background, and its rest
+	// lifted as soon as it answers (rest_probe.go)
+	Probed bool `json:"probed,omitempty"`
 
 	// the subscription account resting, when it is one; agent "" and its
 	// provider.KeyAllowanceID for a key out of its own windows
@@ -1034,7 +1042,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// as soon as the switch is off
 		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
-	if status == http.StatusBadRequest {
+	if status == http.StatusBadRequest || status == http.StatusForbidden {
+		// a 403 too: Factory's usage policy check refuses at 403
+		// (content_policy_rejected), which failureOf alone reads as the
+		// account's
 		if _, ok := policyRefusal(body); ok {
 			// the safety filter refused the request's content (#3274:
 			// Codex's 400 cyber_policy), read from the vendor's error
@@ -1176,9 +1187,21 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		if unserved {
 			counted = c.restID()
 		}
+		// failing again while it still rests for a failure of this kind —
+		// asked all the same, as the last one left, or by the request's
+		// own patience going over every account again — keeps the count
+		// where it is, as a rate limit does (rateRest): it climbs once a
+		// rest has ended and it fails again. Before, one request whose
+		// model failed alike on every account (a 5xx, asked a dozen times
+		// over by patience) counted each account a dozen times and rested
+		// them all the 10-minute cap at once (ly on Discord: seven Codex
+		// accounts on gpt-6-astra, all resting minutes)
+		again := backingOff(counted, now) || !unserved && c.model != "" && backingOff(c.restID(), now)
 		routed.Lock()
-		routed.failures[counted]++
-		n := routed.failures[counted]
+		if !again {
+			routed.failures[counted]++
+		}
+		n := max(routed.failures[counted], 1)
 		// the model's own count too, which only its own answer clears: on
 		// an account serving several models, a sibling's answer clears
 		// the account's count, and a model that keeps failing between
@@ -1187,7 +1210,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// is the model's: it climbs its own ladder and rests alone. A
 		// candidate naming no model has no sibling to tell apart
 		if !unserved && c.model != "" {
-			routed.failures[c.restID()]++
+			if !again {
+				routed.failures[c.restID()]++
+			}
 			if own := routed.failures[c.restID()]; own > n {
 				n, modelBackoff = own, true
 			}
@@ -1267,6 +1292,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if id == c.restID() {
 		r.Model = c.model
 	}
+	r.Probed = probeable(c, r, header, now) && !probeMissed(id, now)
 	restingUntil.Lock()
 	if why == failQuota || why == failCredit {
 		// out for as long as magpie guessed: refused so the time before
@@ -1282,6 +1308,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	restingUntil.m[id] = r.Until
 	restingUntil.note[id] = r
 	restingUntil.Unlock()
+	if r.Probed {
+		s.probeLater(c.p, r, now)
+	}
 	if unread && id == c.restKey() && id != c.restID() {
 		narrowing.Add(1)
 		go narrowWhenRead(c, r)
@@ -1367,6 +1396,15 @@ func restSlow(c candidate, now time.Time) (Rest, bool) {
 	restingUntil.m[id] = r.Until
 	restingUntil.note[id] = r
 	return r, true
+}
+
+// backingOff says key still rests after a failure that said nothing of
+// why (failOther), whose count a failure now would climb.
+func backingOff(key string, now time.Time) bool {
+	restingUntil.Lock()
+	defer restingUntil.Unlock()
+	until, ok := restingUntil.m[key]
+	return ok && now.Before(until) && restingUntil.note[key].Why == failOther
 }
 
 // rateRest is how long a rate-limited candidate sits out: as long as the

@@ -124,7 +124,7 @@ func TestAgentLabel(t *testing.T) {
 
 // A model on a key's provider goes by its id only when models.dev knows
 // it: one the user named (an Ollama model, a fine-tune naming their
-// organisation) is "other".
+// organisation, or a known one spelt their way) is "other".
 func TestModelLabelKeepsTheUsersOwnModelIDs(t *testing.T) {
 	cache := map[string]any{"deepseek": map[string]any{"id": "deepseek", "models": map[string]any{
 		"deepseek-v4": map[string]any{"id": "deepseek-v4", "limit": map[string]any{"context": 128000}},
@@ -139,7 +139,7 @@ func TestModelLabelKeepsTheUsersOwnModelIDs(t *testing.T) {
 	catalog.Reset()
 	t.Cleanup(func() { os.Remove(catalog.CachePath()); catalog.Reset() })
 	for _, p := range []provider.Provider{
-		{ID: "my-deepseek", Name: "DS", Preset: "deepseek", Chat: "https://api.deepseek.com/v1", Key: "sk-x", Models: []string{"deepseek-v4"}},
+		{ID: "my-deepseek", Name: "DS", Preset: "deepseek", Chat: "https://api.deepseek.com/v1", Key: "sk-x", Models: []string{"deepseek-v4", "DeepSeek_V4-260101"}},
 		{ID: "my-openai", Name: "OA", Preset: "openai", Chat: "https://api.openai.com/v1", Key: "sk-y", Models: []string{"ft:gpt-4o:acme-corp::abc123"}},
 		{ID: "my-ollama", Name: "Local", Preset: "ollama", Chat: "http://127.0.0.1:11434/v1", Models: []string{"acme-internal-llm"}},
 	} {
@@ -148,7 +148,10 @@ func TestModelLabelKeepsTheUsersOwnModelIDs(t *testing.T) {
 		}
 	}
 	for ref, want := range map[string]string{
-		"my-deepseek/deepseek-v4":               "deepseek/deepseek-v4",
+		"my-deepseek/deepseek-v4": "deepseek/deepseek-v4",
+		// known only under another spelling (catalog.SameModel): the
+		// user's own spelling isn't sent
+		"my-deepseek/DeepSeek_V4-260101":        "deepseek/other",
 		"my-openai/ft:gpt-4o:acme-corp::abc123": "openai/other",
 		"my-ollama/acme-internal-llm":           "ollama/other",
 	} {
@@ -158,8 +161,9 @@ func TestModelLabelKeepsTheUsersOwnModelIDs(t *testing.T) {
 	}
 }
 
-// Partner counts an earlier build kept are not sent: this build lists no
-// partners.
+// The partners' counts of the days ended go with the day's event, each as
+// one "magpie partner" at its own day, and are sent once; with what magpie
+// is used with turned off they don't go.
 func TestSendPartnerCounts(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -169,13 +173,16 @@ func TestSendPartnerCounts(t *testing.T) {
 	usage = func() Usage { return Usage{} }
 	defer func() { usage = readUsage }()
 	counts := `{"days":{"2026-09-27":{"acme":{"shown":12,"opened":2}},"2026-09-28":{"acme":{"shown":3}}}}`
-	f := filepath.Join(home, ".cache", "magpie", "partner-counts.json")
-	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
-		t.Fatal(err)
+	write := func() {
+		f := filepath.Join(home, ".cache", "magpie", "partner-counts.json")
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte(counts), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(f, []byte(counts), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	write()
 	var got [][]map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var b struct {
@@ -199,13 +206,18 @@ func TestSendPartnerCounts(t *testing.T) {
 		return out
 	}
 	Send(context.Background(), "0.1.300", "app", day)
-	Send(context.Background(), "0.1.300", "app", day.Add(24*time.Hour))
-	if len(got) == 0 {
-		t.Fatal("nothing was sent")
+	if want := "2026-09-27T12:00:00Z acme opened 2 false,2026-09-27T12:00:00Z acme shown 12 false"; strings.Join(partners(got[0]), ",") != want {
+		t.Fatalf("partner events %q, want %q", partners(got[0]), want)
 	}
-	for i, b := range got {
-		if ev := partners(b); len(ev) != 0 {
-			t.Fatalf("batch %d sent partner events %s", i, strings.Join(ev, ","))
-		}
+	Send(context.Background(), "0.1.300", "app", day.Add(24*time.Hour))
+	if want := "2026-09-28T12:00:00Z acme shown 3 false"; strings.Join(partners(got[1]), ",") != want {
+		t.Fatalf("the next day sent %q, want %q", partners(got[1]), want)
+	}
+
+	write()
+	settings.Save(settings.Settings{NoUsageStats: true})
+	Send(context.Background(), "0.1.300", "app", day.Add(48*time.Hour))
+	if len(got) != 3 || len(partners(got[2])) != 0 {
+		t.Fatalf("sent with usage off: %v", got[2:])
 	}
 }
