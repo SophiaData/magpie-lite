@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux release-darwin clean dev dev-once
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -66,6 +66,28 @@ app: build
 	@cp THIRD_PARTY_NOTICES magpie.app/Contents/Resources/THIRD_PARTY_NOTICES
 	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > magpie.app/Contents/Info.plist
 	@echo "  magpie.app"
+
+# macOS desktop release: bundle, ad-hoc sign, a zip for AppAsset(), and a
+# dmg for manual installs. Ad-hoc signing verifies integrity only; it does
+# not identify a developer or team, and the app is not notarized, so first
+# launch may need Gatekeeper approval.
+DARWINVER = $(shell echo $(VERSION) | sed -E 's/^v//; s/[^0-9.].*//')
+release-darwin:
+	@rm -rf dist/magpie.app
+	@mkdir -p dist/magpie.app/Contents/MacOS dist/magpie.app/Contents/Resources
+	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie.app/Contents/MacOS/magpie .
+	@cp build/darwin/magpie.icns dist/magpie.app/Contents/Resources/magpie.icns
+	@cp build/darwin/Assets.car dist/magpie.app/Contents/Resources/Assets.car
+	@sed 's/@VERSION@/$(or $(DARWINVER),0.0.0)/' build/darwin/Info.plist > dist/magpie.app/Contents/Info.plist
+	@codesign --force --deep --sign - --timestamp=none dist/magpie.app
+	@codesign --verify --deep --strict dist/magpie.app
+	@ditto -c -k --sequesterRsrc --keepParent dist/magpie.app dist/magpie-darwin-$(shell go env GOARCH).zip
+	@rm -rf dist/magpie-dmg && mkdir -p dist/magpie-dmg
+	@ditto dist/magpie.app dist/magpie-dmg/magpie.app
+	@codesign --verify --deep --strict dist/magpie-dmg/magpie.app
+	@ln -s /Applications dist/magpie-dmg/Applications
+	@hdiutil create -volname "magpie $(or $(DARWINVER),0.0.0)" -srcfolder dist/magpie-dmg -ov -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
+	@rm -rf dist/magpie-dmg
 
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png

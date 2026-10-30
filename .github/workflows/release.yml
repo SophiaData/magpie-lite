@@ -1,11 +1,10 @@
 name: Release
 
-# Pushing a v* tag hands off to yetone/magpie-releases, which builds, signs,
-# notarises and publishes magpie there; that repo is where people download
-# from, and the signing secrets live only there. Once its release has every
-# asset, the same release is copied here, so this repo's Releases page has
-# the installers too (PapainTea on X). Self-update, install.sh and the site
-# still read magpie-releases only.
+# Build this fork's own release here: the Windows, Linux and macOS desktop
+# builds and the terminal-only builds, published on this repository's Releases
+# page. This build reads and installs its updates from there
+# (internal/update): feed.json and notes.json are built beside the binaries
+# and attached to every release, and releases/latest/download serves them.
 
 on:
   push:
@@ -14,108 +13,256 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., 0.1.0 — no v prefix; the v tag must exist)'
+        description: 'Version to release, no v prefix (e.g. 0.2.1)'
         required: true
         type: string
 
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  trigger-release:
+  version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      ref: ${{ steps.version.outputs.ref }}
-
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
     steps:
-      - name: Get version
-        id: version
+      - name: Read the version
+        id: v
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            REF="$GITHUB_REF_NAME"
-            VERSION="${REF#v}"
+            TAG="$GITHUB_REF_NAME"
+            VERSION="${TAG#v}"
           else
             VERSION="$INPUT_VERSION"
-            REF="v$INPUT_VERSION"
+            TAG="v$VERSION"
           fi
-          # a newline or quote would add outputs or break the JSON below
           [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "bad version: $VERSION" >&2; exit 1; }
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo "Triggering release for version: $VERSION (ref: $REF)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "building $TAG"
 
-      - name: Trigger release workflow in magpie-releases
-        uses: peter-evans/repository-dispatch@v3
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
         with:
-          # PAT with contents write on yetone/magpie-releases.
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
-          repository: yetone/magpie-releases
-          event-type: release
-          client-payload: '{"ref": "${{ steps.version.outputs.ref }}", "version": "${{ steps.version.outputs.version }}"}'
+          go-version-file: go.mod
 
-      - name: Output status
-        run: echo "Watch the build at https://github.com/yetone/magpie-releases/actions"
+      - name: Build the desktop app and the terminal builds
+        shell: bash
+        env:
+          VERSION: v${{ needs.version.outputs.version }}
+        run: |
+          make release-windows VERSION="$VERSION"
+          make release-cli TARGETS="windows/amd64 windows/arm64" VERSION="$VERSION"
+          make release-cli TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 android/arm64" VERSION="$VERSION"
 
-  mirror-release:
-    needs: trigger-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-and-cli
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install GTK and WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Build the desktop app (Linux)
+        env:
+          VERSION: v${{ needs.version.outputs.version }}
+        run: make release-linux VERSION="$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: amd64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the desktop app bundle
+        env:
+          VERSION: v${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(go env GOOS)" = darwin
+          test "$(go env GOARCH)" = "$ARCH"
+          make release-darwin VERSION="$VERSION"
+          test -f "dist/magpie-darwin-$ARCH.zip"
+          test -f "dist/magpie-darwin-$ARCH.dmg"
+          # verify can answer "Resource temporarily unavailable" right after
+          # the image is written, so give it a few tries; the mount below is
+          # what holds the image to its contents.
+          verified=no
+          for try in 1 2 3; do
+            if hdiutil verify "dist/magpie-darwin-$ARCH.dmg"; then verified=yes; break; fi
+            echo "hdiutil verify failed (try $try)"
+            sleep 5
+          done
+          test "$verified" = yes
+          MNT="$RUNNER_TEMP/dmg"
+          mkdir -p "$MNT"
+          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "dist/magpie-darwin-$ARCH.dmg"
+          test -x "$MNT/magpie.app/Contents/MacOS/magpie"
+          test -L "$MNT/Applications"
+          codesign --verify --deep --strict "$MNT/magpie.app"
+          hdiutil detach "$MNT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            dist/magpie-darwin-${{ matrix.arch }}.zip
+            dist/magpie-darwin-${{ matrix.arch }}.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [version, windows, linux, macos]
     runs-on: ubuntu-latest
-    timeout-minutes: 75
-    permissions:
-      contents: write
-      issues: write # to say a release went out without Chinese notes
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      REF: ${{ needs.trigger-release.outputs.ref }}
-      ASSETS: 16 # what every release carries; a smaller count is still uploading
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - name: Wait for magpie-releases to publish every asset
-        run: |
-          for i in $(seq 1 120); do
-            n=$(gh release view "$REF" -R yetone/magpie-releases --json assets -q '.assets | length' 2>/dev/null || echo 0)
-            echo "attempt $i: $n of $ASSETS assets"
-            [ "$n" -ge "$ASSETS" ] && exit 0
-            sleep 30
-          done
-          echo "magpie-releases never published $REF with $ASSETS assets" >&2
-          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
-      - name: Copy the release here
+      - name: The release's notes
         run: |
           set -euo pipefail
-          mkdir -p dist
-          gh release download "$REF" -R yetone/magpie-releases -D dist
-          gh release view "$REF" -R yetone/magpie-releases --json body -q .body > notes.md
-          printf '\n\n---\nThe same release, and the feed magpie updates from: https://github.com/yetone/magpie-releases/releases/tag/%s\n' "$REF" >> notes.md
-          if gh release view "$REF" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$REF" -R "$GITHUB_REPOSITORY" --notes-file notes.md
-            gh release upload "$REF" dist/* -R "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$REF" dist/* -R "$GITHUB_REPOSITORY" --verify-tag --title "magpie $REF" --notes-file notes.md
-          fi
-          n=$(gh release view "$REF" -R "$GITHUB_REPOSITORY" --json assets -q '.assets | length')
-          echo "$REF has $n assets here"
-          [ "$n" -ge "$ASSETS" ]
+          {
+            echo "magpie $VERSION"
+            echo
+            echo "Built from $GITHUB_REPOSITORY at ${GITHUB_SHA::12}."
+            echo
+            echo "Automatic updates are off in this build: nothing is checked,"
+            echo "downloaded or installed by itself. Ask for a check from"
+            echo "Settings' Check, or run \`magpie update\`."
+            echo
+            echo "## Install"
+            echo
+            echo "Download \`magpie-windows-amd64.exe\` (Windows desktop)."
+            echo "On macOS, \`magpie-darwin-arm64.dmg\` (Apple silicon) or"
+            echo "\`magpie-darwin-amd64.dmg\` (Intel) is a drag-to-Applications install;"
+            echo "\`magpie update\` fetches the matching \`.zip\`."
+            echo "Terminal builds use \`magpie-cli-<os>-<arch>\`."
+            echo "The macOS app is ad-hoc signed and not notarized; first launch may"
+            echo "need Gatekeeper approval (right-click > Open, or System Settings >"
+            echo "Privacy & Security > Open Anyway)."
+          } > notes.md
 
-      # The Chinese notes are written by magpie-releases' DeepSeek call, and
-      # when that call fails the release goes out in English alone: a spent
-      # balance did so for v0.1.1233 to v0.1.1242, and Chinese apps showed
-      # English for a day until a user said so (#2122). Its warning is in a
-      # log nobody reads, so a release without them is said here, on one
-      # open issue, where the notes get added by hand.
-      - name: Say when the notes have no Chinese
-        env:
-          GH_REPO: ${{ github.repository }}
+      - name: Build feed.json and notes.json
         run: |
-          set -uo pipefail
-          if grep -qF '<!-- lang:zh -->' notes.md; then
-            echo "$REF has Chinese notes"
-            exit 0
+          set -euo pipefail
+          # The releases published before this one, which notes.json carries.
+          gh api "repos/$GH_REPO/releases?per_page=100" > prev.json || echo '[]' > prev.json
+          python3 - <<'PY'
+          import hashlib, json, os
+
+          repo = os.environ["GH_REPO"]
+          tag = os.environ["TAG"]
+          version = os.environ["VERSION"]
+          notes = open("notes.md", encoding="utf-8").read()
+          page = f"https://github.com/{repo}/releases/tag/{tag}"
+
+          assets = {}
+          for name in sorted(os.listdir("dist")):
+              if name in ("feed.json", "notes.json"):
+                  continue
+              path = os.path.join("dist", name)
+              if not os.path.isfile(path):
+                  continue
+              assets[name] = {
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                  "size": os.path.getsize(path),
+                  "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest(),
+              }
+          feed = {"version": version, "notes": notes, "url": page, "assets": assets}
+          open("dist/feed.json", "w", encoding="utf-8").write(
+              json.dumps(feed, ensure_ascii=False, indent=1))
+
+          releases = []
+          try:
+              prev = json.load(open("prev.json", encoding="utf-8"))
+          except Exception:
+              prev = []
+          for r in prev:
+              if r.get("draft") or r.get("prerelease"):
+                  continue
+              t = r.get("tag_name") or ""
+              releases.append({
+                  "version": t[1:] if t.startswith("v") else t,
+                  "notes": r.get("body") or "",
+                  "url": r.get("html_url") or "",
+              })
+          releases.insert(0, {"version": version, "notes": notes, "url": page})
+          open("dist/notes.json", "w", encoding="utf-8").write(
+              json.dumps({"releases": releases}, ensure_ascii=False, indent=1))
+          PY
+
+      - name: Test passed on this commit
+        run: |
+          set -euo pipefail
+          ok=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=20" \
+                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "$ok" -eq 0 ]; then
+            echo "Test has not passed on $GITHUB_SHA; this refuses to publish until it does" >&2
+            exit 1
           fi
-          title="Release notes without Chinese"
-          msg="$REF went out with English notes alone: magpie-releases' release run got no Chinese from DeepSeek. Its reason is the \`DeepSeek wrote no Chinese notes\` warning in that run's Generate changelog step (https://github.com/yetone/magpie-releases/actions). Until the Chinese is added below a \`<!-- lang:zh -->\` marker, in the release on yetone/magpie-releases and here, apps set to Chinese show its notes in English (#2122)."
-          n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title -q ".[] | select(.title == \"$title\") | .number" | head -1) || n=""
-          if [ -n "$n" ]; then
-            gh issue comment "$n" --body "$msg" || echo "::warning::could not comment on #$n: $msg"
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          ls -l dist
+          # A draft first, every asset uploaded, then Latest: a release never
+          # shows a half-uploaded set to `releases/latest/download`.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --draft=false --notes-file notes.md --latest
           else
-            gh issue create --title "$title" --body "$msg" || echo "::warning::could not file an issue: $msg"
+            gh release create "$TAG" --draft --title "magpie $TAG" --notes-file notes.md --target main
+            gh release upload "$TAG" dist/*
+            gh release edit "$TAG" --draft=false --notes-file notes.md --latest
           fi
+          gh release view "$TAG" --json assets -q '.assets[].name'

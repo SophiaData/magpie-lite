@@ -51,6 +51,10 @@ func updateAutoCmd(args []string) error {
 			return err
 		}
 	}
+	if update.AutoUpdateDisabled {
+		fmt.Println("automatic updates are off in this build", muted.Render("· magpie update or Settings' Check looks for one"))
+		return nil
+	}
 	every := "6h"
 	for k, m := range updateEveries {
 		if m == s.UpdateEvery {
@@ -95,10 +99,10 @@ func updateMirrorCmd(args []string) error {
 		}
 	}
 	if s.UpdateMirror == "" {
-		fmt.Println("updates are downloaded from GitHub", muted.Render("· magpie update mirror <prefix> has them come through a mirror; the checksum is still usemagpie.ai's"))
+		fmt.Println("updates are downloaded from GitHub", muted.Render("· magpie update mirror <prefix> has them come through a mirror; the checksum is still the release's own"))
 		return nil
 	}
-	fmt.Println("updates are downloaded through", bold.Render(s.UpdateMirror), muted.Render("· each is checked against usemagpie.ai's checksum · magpie update mirror off goes back to GitHub"))
+	fmt.Println("updates are downloaded through", bold.Render(s.UpdateMirror), muted.Render("· each is checked against the release's own checksum · magpie update mirror off goes back to GitHub"))
 	return nil
 }
 
