@@ -16,8 +16,10 @@ func TestColdTurnsTaken(t *testing.T) {
 	coldTurns.over.Store(false)
 	t.Cleanup(func() { coldTurnsTaken = false; coldTurns.over.Store(false) })
 	var inStep, inPage, both atomic.Int32
-	asked, release := make(chan struct{}), make(chan struct{})
-	stepBegun := make(chan struct{})
+	// the warm-up holds its turn before the page asks: asked at once, the
+	// page could take the turn before the warm-up's goroutine ran, a
+	// right order the test called wrong (#4510)
+	holding, release := make(chan struct{}), make(chan struct{})
 	page := coldTurn(func(http.ResponseWriter, *http.Request) {
 		inPage.Add(1)
 		if inStep.Load() > 0 {
@@ -32,12 +34,9 @@ func TestColdTurnsTaken(t *testing.T) {
 	go func() {
 		defer close(warmed)
 		warmUp(func() {
-			// taken before the ask, so the ask meets a warm-up that is in
-			// its step rather than one that hasn't started yet
-			close(stepBegun)
 			inStep.Add(1)
 			defer inStep.Add(-1)
-			<-asked
+			close(holding)
 			<-release
 		}, func() {
 			inStep.Add(1)
@@ -47,17 +46,9 @@ func TestColdTurnsTaken(t *testing.T) {
 			}
 		})
 	}()
-	select {
-	case <-stepBegun:
-	case <-time.After(5 * time.Second):
-		// let a step still starting finish, rather than hold the package's turn
-		close(asked)
-		close(release)
-		t.Fatal("the warm-up's step never began")
-	}
+	<-holding
 	answered := make(chan struct{})
 	go func() {
-		close(asked)
 		ask()
 		close(answered)
 	}()

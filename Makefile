@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux release-darwin clean dev dev-once
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -67,36 +67,15 @@ app: build
 	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > magpie.app/Contents/Info.plist
 	@echo "  magpie.app"
 
-# macOS desktop release: bundle, ad-hoc sign, a zip for AppAsset(), and a
-# dmg for manual installs. Ad-hoc signing verifies integrity only; it does
-# not identify a developer or team, and the app is not notarized, so first
-# launch may need Gatekeeper approval.
-DARWINVER = $(shell echo $(VERSION) | sed -E 's/^v//; s/[^0-9.].*//')
-release-darwin:
-	@rm -rf dist/magpie.app
-	@mkdir -p dist/magpie.app/Contents/MacOS dist/magpie.app/Contents/Resources
-	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie.app/Contents/MacOS/magpie .
-	@cp build/darwin/magpie.icns dist/magpie.app/Contents/Resources/magpie.icns
-	@cp build/darwin/Assets.car dist/magpie.app/Contents/Resources/Assets.car
-	@sed 's/@VERSION@/$(or $(DARWINVER),0.0.0)/' build/darwin/Info.plist > dist/magpie.app/Contents/Info.plist
-	@codesign --force --deep --sign - --timestamp=none dist/magpie.app
-	@codesign --verify --deep --strict dist/magpie.app
-	@ditto -c -k --sequesterRsrc --keepParent dist/magpie.app dist/magpie-darwin-$(shell go env GOARCH).zip
-	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt && mkdir -p dist/magpie-mnt
-	@hdiutil create -size 4g -fs HFS+ -volname "magpie $(or $(DARWINVER),0.0.0)" -ov -type UDIF dist/magpie-rw.dmg
-	@hdiutil attach -nobrowse -readwrite -mountpoint dist/magpie-mnt dist/magpie-rw.dmg
-	@ditto dist/magpie.app dist/magpie-mnt/magpie.app
-	@codesign --verify --deep --strict dist/magpie-mnt/magpie.app
-	@ln -s /Applications dist/magpie-mnt/Applications
-	@hdiutil detach dist/magpie-mnt
-	@rm -f dist/magpie-darwin-$(shell go env GOARCH).dmg
-	@hdiutil convert dist/magpie-rw.dmg -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
-	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt
-
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png
 	@go run build/icon/gen.go tray-flap internal/gui/trayflap
-	@go run build/icon/gen.go app 64 internal/gui/icon.png
+	@# Windows draws an app's icon to the edges of its square: the exe's
+	@# icon group (build/windows/winres.json) and the tray's .ico
+	@for s in 16 20 24 32 40 48 64 128 256; do \
+		go run build/icon/gen.go win $$s build/windows/icon-$$s.png; \
+	done
+	@go run build/icon/gen.go win-ico internal/gui/icon-windows.ico
 	@go run build/icon/gen.go app 1024 internal/gui/icon-1024.png
 	@go run build/icon/gen.go app 256 internal/gui/icon-256.png
 	@rm -rf build/darwin/magpie.iconset && mkdir -p build/darwin/magpie.iconset
