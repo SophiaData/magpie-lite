@@ -107,6 +107,10 @@ type host struct {
 	loading map[*application.WebviewWindow]bool
 	// the main window placed as it was last left (placeMain), and so shown
 	placed atomic.Pointer[application.WebviewWindow]
+
+	// the quick panel's shortcut bound now, "" for none (panelkey_app.go)
+	keyMu    sync.Mutex
+	panelKey string
 }
 
 // whenReady runs fn once the main window can be shown safely.
@@ -145,9 +149,13 @@ func (h *host) Import(link string) {
 
 // dock puts magpie in the Dock or takes it out as s says, with the window
 // shown or not, full screen or not.
-func (h *host) dock(s settings.Settings, shown bool) {
+func (h *host) dock(s settings.Settings, shown bool) { h.dockFront(s, shown, shown) }
+
+// dockFront is dock, with front saying whether joining the Dock activates
+// magpie: not for the window a restart by itself brings back.
+func (h *host) dockFront(s settings.Settings, shown, front bool) {
 	full := application.InvokeSyncWithResult(func() bool { return h.main != nil && h.main.IsFullscreen() })
-	setDock(inDock(s, shown, full), shown)
+	setDock(inDock(s, shown, full), front)
 }
 
 // inDock: always, never, or while the window is shown (the default), as s
@@ -312,6 +320,19 @@ func Run(version string, showMain bool, link string) error {
 	if devRole() == "backend" {
 		return devBackend(func(w Windows) http.Handler { return Handler(w, startBackend()) })
 	}
+	// Windows: the app opened from Downloads (or the Desktop, or a zip)
+	// opens the copy installed in the user's programs folder, putting
+	// itself there first, and Open at login opens that one from now on
+	if from, to := update.Settle(); to != "" {
+		err := update.Forward(from, to)
+		if err == nil {
+			if err := autostart.Repoint(from, to); err != nil {
+				log.Println("open at login:", err)
+			}
+			return nil
+		}
+		log.Println("install:", err)
+	}
 	// A restart to update on a Mac or Linux started this one beside the
 	// magpie before, which hands it the gateway (handover.go).
 	startExe, _ = update.Executable()
@@ -323,10 +344,16 @@ func Run(version string, showMain bool, link string) error {
 	// After an update off the Mac, the old process starts this one and then
 	// quits; let it go before looking for the gateway.
 	update.AwaitPredecessor()
+	// installed from a download just now: what magpie left beside it goes
+	update.Settled()
 	// the Mac's second launch hands over to the magpie already running
 	if runningAlready(showMain || OpenPanel, link) {
 		return nil
 	}
+	// a restart magpie made by itself: back as it was, taking no focus
+	// (quiet_restart.go)
+	quiet := takeQuietRestart()
+	quietShow.Store(quiet && showMain)
 	// before the first webview, which opens WebKit's data where programName says
 	keepWebData()
 	go func() {
@@ -366,6 +393,9 @@ func Run(version string, showMain bool, link string) error {
 	if before != 0 && runtime.GOOS == "linux" {
 		awaitExit(before, handedOffWait)
 	}
+	// a quiet start joins the Dock once started (below): Wails activates
+	// an app that starts in it
+	policy := dockPolicy(settings.Load().Dock && !quiet)
 	h.app = application.New(application.Options{
 		// Windows and Linux start a new process for a magpie:// link (or a
 		// second launch); it hands its arguments to the running one and quits.
@@ -375,7 +405,7 @@ func Run(version string, showMain bool, link string) error {
 		Description:    "one place to pick every agent's model",
 		Icon:           appIconFor(),
 		Assets:         application.AssetOptions{Handler: ownWindow(handler)},
-		Mac:            application.MacOptions{ActivationPolicy: dockPolicy(settings.Load().Dock)},
+		Mac:            application.MacOptions{ActivationPolicy: policy},
 		Windows:        windowsOptions(),
 		Linux:          linuxOptions(),
 		// A version downloaded but not restarted into is installed on the
@@ -543,6 +573,9 @@ func Run(version string, showMain bool, link string) error {
 	}
 	h.tray.SetMenu(menu)
 	h.tray.AttachWindow(h.panel).WindowOffset(6)
+	// before Wails removes the item as the app quits, which would forget
+	// where the user put the icon (trayshown_darwin.go; nothing elsewhere)
+	h.app.OnShutdown(func() { keepTrayPlace() })
 	// a Mac that handed the gateway to the new version (handover.go)
 	// leaves the menu bar to it while it finishes its requests: one bird
 	if runtime.GOOS == "darwin" {
@@ -561,6 +594,7 @@ func Run(version string, showMain bool, link string) error {
 		}
 	}
 	h.watchTrayUsage()
+	h.startPanelKey(before)
 	// Omarchy's bar shows magpie once: as its widget (Settings → Bar
 	// icon) or as the tray's item, not both
 	onBarIcon = h.setTrayInBar
@@ -611,6 +645,10 @@ func Run(version string, showMain bool, link string) error {
 	}
 	if showMain {
 		h.whenReady(func() { h.ShowMain(argView(OpenView)) })
+	} else if quiet && settings.Load().Dock {
+		// kept out of the Dock to start (Mac options above), it joins
+		// now without coming to the front
+		h.whenReady(func() { setDock(true, false) })
 	}
 	if OpenPanel {
 		h.whenReady(func() { application.InvokeAsync(h.togglePanel) })
@@ -800,6 +838,8 @@ func (h *host) leaveMenuBar() {
 			h.main.Hide()
 		}
 		setDock(false, false)
+		// and its shortcut, for the new version to bind
+		go h.dropPanelKey()
 	})
 }
 

@@ -128,10 +128,15 @@ type Account struct {
 // Claude models on Chat and Anthropic's. nil is not known, and every API
 // the provider speaks may be tried. One the user set for the model
 // (SetModelAPI) is the only one.
-func (p Provider) APIs(model string) []Protocol {
+func (p Provider) APIs(model string) []Protocol { return p.apisAmong(p.Speaks(), model) }
+
+// apisAmong is APIs with the protocols p speaks found already.
+func (p Provider) apisAmong(speaks []Protocol, model string) []Protocol {
 	// the one the user said it is asked on, whatever the list says
-	if proto, ok := p.ModelAPI(model); ok {
-		return []Protocol{proto}
+	if proto, ok := p.apiSet(model); ok {
+		if proto, ok := p.modelAPIAmong(len(speaks), proto); ok {
+			return []Protocol{proto}
+		}
 	}
 	return p.ListedAPIs(model)
 }
@@ -159,11 +164,15 @@ func (p Provider) ListedAPIs(model string) []Protocol {
 			return apis
 		}
 	}
-	// Vertex AI serves Gemini on generateContent, and its partner models
-	// (publisher/model) on chat completions alone
+	// Vertex AI serves Gemini on generateContent, its partner models
+	// (publisher/model) on chat completions alone, and Claude on
+	// Anthropic's Messages API alone
 	if p.IsVertex() {
 		if VertexPartner(model) {
 			return []Protocol{Chat}
+		}
+		if VertexClaude(model) {
+			return []Protocol{Anthropic}
 		}
 		return []Protocol{Gemini}
 	}
@@ -1238,7 +1247,7 @@ func codexRefresh(ctx context.Context, raw map[string]any, reason string) (strin
 		RefreshToken string `json:"refresh_token"`
 	}
 	if res.StatusCode != 200 || json.Unmarshal(b, &fresh) != nil || fresh.AccessToken == "" {
-		err := refreshFailed(res.StatusCode, "Codex", "Codex is signed out (token refresh failed); run codex login")
+		err := refreshFailed(res.StatusCode, "Codex", "Codex is signed out (token refresh failed); sign in to this account again")
 		if res.StatusCode != 200 && codexRefreshGone(res.StatusCode, b) {
 			// refused for good, by Codex's own rule (#4308)
 			err = codexRefreshGoneError{err}

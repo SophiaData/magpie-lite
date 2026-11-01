@@ -10,8 +10,11 @@ const ID = process.env.FAKE_ID || "fakeco"
 const born = Date.now()
 
 // fakeWho is who a team signs in as: team@fake, and a team named name/uid
-// is name@fake with that uid, as WorkBuddy's plugin keeps one
+// is name@fake with that uid, as WorkBuddy's plugin keeps one; a team
+// named =id is named by that id, its uid too, as the CodeArts plugin's
+// OfficeAce card names a new sign-in by the Huawei domain id (#4473)
 function fakeWho(team) {
+  if (team?.startsWith("=")) return { accountId: team.slice(1), uid: team.slice(1) }
   const [name, uid] = (team ?? "me").split("/")
   return uid ? { accountId: name + "@fake", uid } : { accountId: name + "@fake" }
 }
@@ -161,6 +164,12 @@ export const FakePlugin = async ({ client }) => ({
       // Trae's levels as Our Free Model's plugin lists them (nianshou5)
       cfg.provider[ID].models["fake-trae"] = { name: "Fake Trae", reasoning: true, variants: levels(["light", "high", "extra_high"]), limit: { context: 1000, output: 100 } }
     }
+    // $FAKE_TEMP: a model whose vendor turns temperature and top_p away,
+    // said as Factory 0.1.31's config models say it of its OpenAI route
+    // (plugins#154); fake-1 beside it says nothing and takes them
+    if (process.env.FAKE_TEMP) {
+      cfg.provider[ID].models["fake-cold"] = { name: "Fake Cold", temperature: false, limit: { context: 1000, output: 100 } }
+    }
     // $FAKE_ZEN: a model as opencode-zen-free 0.1.3's config hook writes
     // it, from models.opencode.ai on 2026-10-11 (#1595, tkhs101): it
     // takes audio, video and pdf too, at five levels (its api left to ours)
@@ -273,15 +282,17 @@ export const FakePlugin = async ({ client }) => ({
       // $FAKE_WINDOWS: a JSON file of each account's windows, read at
       // each reading, as a vendor's usage page says them now (Factory's
       // plugin with Standard usage only, plugins#349)
+      // an IAM id kept as the accountId, the phone told here (#4416)
+      const iam = a.accountId?.startsWith("iam::") ? "180****2361" : undefined
       if (process.env.FAKE_WINDOWS) {
         const fs = await import("node:fs")
         const ws = JSON.parse(fs.readFileSync(process.env.FAKE_WINDOWS, "utf8"))[a.accountId]
-        if (ws) return { plan: "Fake Pro", windows: ws }
+        if (ws) return { plan: "Fake Pro", windows: ws, user: iam }
       }
       const full = a.accountId === "full@fake"
       return {
         plan: "Fake Pro",
-        user: full ? "Full@Fake.example" : undefined,
+        user: full ? "Full@Fake.example" : iam,
         until: "2030-01-02T03:04:05Z",
         renew: "auto",
         resets: full ? { count: 3, byWindow: true, fiveHour: 2, weekly: 1, team: true, each: [{ window: "weekly" }, { until: "2031-01-02T00:00:00Z", window: "fiveHour" }, { until: 1924992000, window: "fiveHour" }] } : undefined,

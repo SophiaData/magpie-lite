@@ -26,7 +26,9 @@ const (
 	LeastUsed = "usage"
 	Pace      = "pace"
 	// Weighted spreads a provider's requests over its keys by each key's
-	// weight (KeyAccount.Weight, #841), smoothly: 3 and 1 go a, a, b, a…
+	// weight (KeyAccount.Weight, #841), or a subscription's over its
+	// accounts by each account's (AccountWeights), smoothly: 3 and 1 go
+	// a, a, b, a…
 	Weighted = "weight"
 	// FreeFirst spends what costs nothing first: the models its vendor
 	// serves at no cost to the subscription's allowance or credits, before
@@ -36,6 +38,17 @@ const (
 	// lately — first token, then how fast it wrote — first; one not
 	// measured lately gets a turn now and then to be (routes.Fastest).
 	Fastest = "fast"
+	// Cheapest goes by price: the member whose model costs least at the
+	// request's time first — its vendor's peak hours and the provider's
+	// rate windows read then — those alike in their listed order
+	// (routes.Cheapest). A group's only: a provider's keys and accounts
+	// all bill its one price.
+	Cheapest = "cheap"
+	// Drain stays on one key or account until it is used up, then goes
+	// on to the next in the listed order, and stays on that one: one
+	// before it that renews meanwhile doesn't take its requests back
+	// (dzxx0496 on Discord; routes.Drain).
+	Drain = "drain"
 )
 
 // pluginRouting is a routing a plugin serves: "<plugin>/<name>".
@@ -94,6 +107,18 @@ func SetCapCareful(id string, on bool) error {
 	return Save(*p)
 }
 
+// SetCountFree has every model of a provider count as free for the
+// routings that weigh it, or go by its vendor's word again
+// (Provider.CountFree).
+func SetCountFree(id string, on bool) error {
+	p, err := Find(id)
+	if err != nil {
+		return err
+	}
+	p.CountFree = on
+	return Save(*p)
+}
+
 // SetKeepLogin keeps Codex or Claude Code signed in to the account the
 // user made first (Provider.KeepLogin), or lets magpie move it on again.
 // Either way it is no longer kept on one of the user's choosing
@@ -106,7 +131,10 @@ func SetKeepLogin(id string, keep bool) error {
 	if p.Account == nil || p.Account.Agent != p.ID || !slices.Contains(switchedAgents, p.ID) {
 		return fmt.Errorf("magpie doesn't sign %s in to another of its accounts", p.Name)
 	}
-	chosen := p.KeepLogin && p.KeepLoginAs != ""
+	if keep && p.SwitchOnly {
+		return errSwitchOnly(*p)
+	}
+	chosen := p.keepsLogin() && p.KeepLoginAs != ""
 	p.KeepLogin, p.KeepLoginAs = keep, ""
 	if err := Save(*p); err != nil {
 		return err
@@ -249,7 +277,7 @@ func (a Allowance) WeekUsedUp(now time.Time) bool {
 
 // Restarts is when an auto-used reset starts the account's windows again,
 // as the Codex reset about to run out is spent (expiringResetSpent):
-// resetExpiryLead before it runs out, or now when the account is held up
+// resetLead before it runs out, or now when the account is held up
 // past then. What they have left then is lost, as at their own reset, so
 // Weekly pace and Smart take it for their renewal when it comes sooner
 // (#717, #718). Zero when none will be.
@@ -624,7 +652,7 @@ func Allowances(agent string) map[string]Allowance {
 				}
 				c.read[key] = st
 			}
-			var renewed []string
+			var renewed, restarts []string
 			for user, a := range all {
 				key := agent + "/" + strings.ToLower(user)
 				if c.renewed[key] > began {
@@ -634,8 +662,13 @@ func Allowances(agent string) map[string]Allowance {
 					at = time.Time{}
 					continue
 				}
-				if was, ok := c.seen[key]; ok && a.renewedFrom(was.a, was.at, share, now) {
-					renewed = append(renewed, user)
+				if was, ok := c.seen[key]; ok {
+					if a.renewedFrom(was.a, was.at, share, now) {
+						renewed = append(renewed, user)
+					}
+					if a.startedAgain(was.a, was.at, share, now) {
+						restarts = append(restarts, user)
+					}
 				}
 				c.seen[key] = reading{a, now}
 			}
@@ -652,6 +685,9 @@ func Allowances(agent string) map[string]Allowance {
 			// again), and before those waiting for them are let go
 			for _, user := range renewed {
 				tellRenewed(agent, user)
+			}
+			for _, user := range restarts {
+				tellStarted(agent, user)
 			}
 			close(done)
 		}()
@@ -736,13 +772,32 @@ var renewedHooks struct {
 	fs []func(agent, user string)
 }
 
+// OnStarted has f told as OnRenewed is, and by the same tellings, but
+// only when a window stands started again in fact: a reading finding one
+// it was full in full no more with its reset gone by, or standing a new,
+// later cycle, or a reset spent on them. What a vendor itself gave the
+// time of waits for that, not for a reading that merely finds its window
+// less than full while the vendor's own word stands (#2718).
+func OnStarted(f func(agent, user string)) {
+	startedHooks.Lock()
+	startedHooks.fs = append(startedHooks.fs, f)
+	startedHooks.Unlock()
+}
+
+var startedHooks struct {
+	sync.Mutex
+	fs []func(agent, user string)
+}
+
 // renewedNow tells those OnRenewed asked, and forgets the account's
 // allowance as last read: its windows are not known till read again, and
 // what holds an account at a share of them (a cap, credits not spent)
-// holds it no more.
+// holds it no more. Those OnStarted asked are told too: a reset spent is
+// a window started again in fact.
 func renewedNow(agent, user string) {
 	forgetAllowance(agent, user)
 	tellRenewed(agent, user)
+	tellStarted(agent, user)
 }
 
 // tellRenewed tells those OnRenewed asked.
@@ -750,6 +805,16 @@ func tellRenewed(agent, user string) {
 	renewedHooks.Lock()
 	fs := renewedHooks.fs
 	renewedHooks.Unlock()
+	for _, f := range fs {
+		f(agent, user)
+	}
+}
+
+// tellStarted tells those OnStarted asked.
+func tellStarted(agent, user string) {
+	startedHooks.Lock()
+	fs := startedHooks.fs
+	startedHooks.Unlock()
 	for _, f := range fs {
 		f(agent, user)
 	}
