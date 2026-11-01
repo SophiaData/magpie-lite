@@ -23,7 +23,11 @@ func TestStaleLatestIsNotUpToDate(t *testing.T) {
 	newest.Store("0.1.1402")
 	var asks atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		asks.Add(1)
+		// the feed, not the release notes asked of the same server: those
+		// come after a check, off the feed's answer, and are no ask of it
+		if r.URL.Query().Get("after") == "" {
+			asks.Add(1)
+		}
 		json.NewEncoder(w).Encode(update.Release{Version: newest.Load().(string)})
 	}))
 	defer srv.Close()
