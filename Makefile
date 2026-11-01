@@ -89,6 +89,7 @@ release-darwin:
 	@codesign --verify --deep --strict dist/magpie-mnt/magpie.app
 	@ln -s /Applications dist/magpie-mnt/Applications
 	@hdiutil detach dist/magpie-mnt
+	@rm -f dist/magpie-darwin-$(shell go env GOARCH).dmg
 	@hdiutil convert dist/magpie-rw.dmg -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
 	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt
 

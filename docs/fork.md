@@ -36,11 +36,12 @@ one diff to carry to the next upstream version.
   only then is it made Latest (so `releases/latest/download` never serves
   half a release), and the workflow refuses to publish unless Test passed on
   the same commit.
-- **Test on ubuntu and Windows; macOS on a schedule.** The suite runs on
-  ubuntu and Windows in `test.yml`, and on a macOS runner in `test-macos.yml`
-  daily and when asked, as it takes about half an hour there and a release
-  waits for `test.yml`'s run. `docker.yml` runs only when asked, so a push
-  publishes no Docker image.
+- **Test on ubuntu, and Windows compiles; macOS on a schedule.** `test.yml`
+  runs the whole suite on ubuntu, compiles it on Windows with the native
+  checks that suite leaves out, and runs it on a macOS runner in
+  `test-macos.yml` daily and when asked — that takes about half an hour
+  there, and a release waits for `test.yml`'s run. `docker.yml` builds and
+  starts the image when asked, and pushes nothing.
 - **A held request's report names the wait it was in.** The 504 goes out
   before the report is written and the client closes it at once, which ends
   the waits: the report takes what the request was waiting in before the

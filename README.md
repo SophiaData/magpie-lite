@@ -10,7 +10,7 @@
 | 自动更新 | 关闭：不会自己检查、下载或重启；`magpie update` 或设置里的"检查"才会 |
 | 合作伙伴 / 赞助商 | 没有：不拉取列表、不显示那一栏、不上报计数，环境变量也打不开 |
 | macOS 安装包 | 除 zip（`magpie update` 用）外，另出 dmg（拖进"应用程序"手动安装） |
-| CI | Test 跑 ubuntu 和 Windows；macOS 全量测试每天定时跑，不阻塞发版 |
+| CI | ubuntu 跑全量测试，Windows 编译全量套件并跑原生检查；macOS 全量测试每天定时跑，不阻塞发版 |
 
 改动细节、上游同步与发版流程见 [docs/fork.md](docs/fork.md)。
 

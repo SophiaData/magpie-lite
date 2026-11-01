@@ -47,14 +47,13 @@ func TestColdTurnsTaken(t *testing.T) {
 			}
 		})
 	}()
+	select {
+	case <-stepBegun:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the warm-up's step never began")
+	}
 	answered := make(chan struct{})
 	go func() {
-		select {
-		case <-stepBegun:
-		case <-time.After(5 * time.Second):
-			t.Error("the warm-up's step never began")
-			return
-		}
 		close(asked)
 		ask()
 		close(answered)
