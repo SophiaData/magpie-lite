@@ -88,6 +88,8 @@ release-darwin:
 	@ditto dist/magpie.app dist/magpie-mnt/magpie.app
 	@codesign --verify --deep --strict dist/magpie-mnt/magpie.app
 	@ln -s /Applications dist/magpie-mnt/Applications
+	@cp build/darwin/magpie.icns dist/magpie-mnt/.VolumeIcon.icns
+	@SetFile -c icnC -a C dist/magpie-mnt || echo "  (no SetFile: the dmg keeps the plain disk icon)"
 	@hdiutil detach dist/magpie-mnt
 	@rm -f dist/magpie-darwin-$(shell go env GOARCH).dmg
 	@hdiutil convert dist/magpie-rw.dmg -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
