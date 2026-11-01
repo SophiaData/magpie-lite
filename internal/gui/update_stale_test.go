@@ -70,12 +70,23 @@ func TestStaleLatestIsNotUpToDate(t *testing.T) {
 	if asks.Load() != 1 {
 		t.Fatalf("a read other than the Version row's asked the feed: %d asks", asks.Load())
 	}
+	// automatic updates are off in this build: the Version row asks
+	// nothing by itself, and an old answer is not said as "up to date"
+	if j := get("/api/update?fresh=1&lang=zh"); j.State != "" {
+		t.Fatalf("auto disabled, old answer: %+v", j)
+	}
+	if asks.Load() != 1 {
+		t.Fatalf("the Version row asked the feed with automatic updates off: %d asks", asks.Load())
+	}
+	// Settings' Check is the user's own move: it asks, and the row says
+	// the newer one
+	mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/api/update/check", nil))
 	j := get("/api/update?fresh=1&lang=zh")
 	for deadline := time.Now().Add(10 * time.Second); j.State == "checking" && time.Now().Before(deadline); j = get("/api/update?fresh=1&lang=zh") {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if j.State != "available" || j.Latest != "0.1.1517" {
-		t.Fatalf("the Version row drawn over an old answer: %+v", j)
+		t.Fatalf("the Version row after a check: %+v", j)
 	}
 
 	// automatic updates off: the old answer isn't said, and nothing is asked
