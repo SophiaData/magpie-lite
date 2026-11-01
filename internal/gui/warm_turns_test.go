@@ -50,6 +50,9 @@ func TestColdTurnsTaken(t *testing.T) {
 	select {
 	case <-stepBegun:
 	case <-time.After(5 * time.Second):
+		// let a step still starting finish, rather than hold the package's turn
+		close(asked)
+		close(release)
 		t.Fatal("the warm-up's step never began")
 	}
 	answered := make(chan struct{})
