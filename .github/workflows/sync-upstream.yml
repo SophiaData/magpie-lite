@@ -45,7 +45,7 @@ jobs:
           if [ -z "$tag" ]; then
             # one request, no clone: the tags' newest version first
             tag=$(git ls-remote --tags --sort=-v:refname "https://github.com/$UPSTREAM.git" 'refs/tags/v0.1.*' \
-              | { grep -v '\^{}' || true; } | head -1 | sed 's#.*refs/tags/##')
+              | { grep -v '\^{}' || true; } | sed -n '1p' | sed 's#.*refs/tags/##')
           fi
           if [ -z "$tag" ]; then
             echo "no upstream tag found" >&2
