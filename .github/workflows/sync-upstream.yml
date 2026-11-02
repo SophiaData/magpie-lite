@@ -37,6 +37,11 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: The upstream tag to take
         id: up
         run: |
@@ -141,6 +146,45 @@ jobs:
               echo "::error::conflicts in $tag; main is untouched"
               exit 1
             fi
+          fi
+          # This fork's patch carries the fixes that the upstream tree had
+          # not made when it was written. When upstream makes one itself, the
+          # replayed line is a duplicate map key: that line is the one vet
+          # names, and only those are dropped, until vet is clean.
+          for i in $(seq 1 10); do
+            if go vet -tags nogui ./... > /tmp/vet.log 2>&1; then
+              break
+            fi
+            dups=$(grep -oE '[^ ]+\.go:[0-9]+:[0-9]+: duplicate key' /tmp/vet.log | sort -u || true)
+            if [ -z "$dups" ]; then
+              break
+            fi
+            for d in $dups; do
+              f=${d%%:*}
+              rest=${d#*:}
+              n=${rest%%:*}
+              if [ -f "$f" ]; then
+                printf '%s\n' "$n $f"
+              fi
+            done | sort -rn | while read -r n f; do
+              sed -i "${n}d" "$f"
+              echo "dropped now-duplicate line $f:$n"
+            done
+          done
+          if ! go vet -tags nogui ./... > /tmp/vet.log 2>&1; then
+            cat /tmp/vet.log
+            {
+              echo "Upstream \`$tag\` and this fork's patch do not fit: vet fails after the replay."
+              echo
+              echo '```'
+              tail -30 /tmp/vet.log
+              echo '```'
+              echo
+              echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+            } > /tmp/body.md
+            notify "[sync-upstream] 补丁与上游不合：$tag" /tmp/body.md
+            echo "::error::vet fails after the replay; main is untouched"
+            exit 1
           fi
           git add -A
           git commit -q -m "upstream: $tag"
@@ -271,3 +315,7 @@ jobs:
             exit 1
           fi
           echo "released v$next"
+          for n in $(gh issue list --state open --search 'sync-upstream in:title' \
+            --json number --jq '.[].number' 2>/dev/null || true); do
+            gh issue close "$n" --comment "v$next is published for \`${{ steps.up.outputs.tag }}\`." || true
+          done

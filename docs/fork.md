@@ -51,8 +51,11 @@ one diff to carry to the next upstream version.
   workflow token anyway. The tree is pushed to `sync/upstream-<version>`,
   tested by a `workflow_dispatch` run of `test.yml` there, and only a green
   run is fast-forwarded into `main`; then the next patch version is
-  published. A conflict, a red run, or a failed release leaves `main` alone
-  and opens one issue whose title starts with `[sync-upstream]`.
+  published. Lines this fork had patched that upstream has since fixed
+  itself are dropped as `duplicate key` reports from `go vet`, and only
+  those; anything else vet finds is left to a person. A conflict, a red
+  run, or a failed release leaves `main` alone and opens one issue whose
+  title starts with `[sync-upstream]`; a release closes those again.
 - **A held request's report names the wait it was in.** The 504 goes out
   before the report is written and the client closes it at once, which ends
   the waits: the report takes what the request was waiting in before the
