@@ -25,7 +25,7 @@ jobs:
   sync:
     name: take the newest upstream tag
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -42,9 +42,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # The same build the tests run with (test.yml): the GUI links GTK 3 and
-      # WebKitGTK 4.1, and only that build lists every route the parity test
-      # walks.
+      # The build the tests use (test.yml): the GUI links GTK 3 and WebKitGTK
+      # 4.1, and only that build registers every route the parity test walks.
       - name: Install GTK and WebKitGTK
         timeout-minutes: 15
         run: |
@@ -106,23 +105,40 @@ jobs:
             fi
             echo "notified: $title"
           }
+          fail() { # title, body-file
+            notify "$1" "$2"
+            echo "::error::$1"
+            exit 1
+          }
           tag="${{ steps.up.outputs.tag }}"
           branch="sync/upstream-${tag#v}"
           git config user.name "upstream-sync"
           git config user.email "upstream-sync@users.noreply.github.com"
-          # this fork's own changes, against the upstream tree it was made on;
-          # its pipelines are its own too, so they are left as main has them
-          # (a push that carries workflow files is refused to the token)
+          # this fork's own changes, against the upstream commit it was based
+          # on; its pipelines are its own too, and a push carrying workflow
+          # files is refused to the token, so they are left as main has them
           git diff --binary "${{ steps.check.outputs.base }}..HEAD" -- . ':(exclude).github/workflows' > /tmp/fork.patch
-          echo "fork patch: $(grep -c '^diff --git' /tmp/fork.patch) files"
+          files=$(grep -c '^diff --git' /tmp/fork.patch || true)
+          echo "fork patch: ${files:-0} files"
+          if [ "${files:-0}" -eq 0 ]; then
+            printf 'This fork has no changes against `%s`, so there is nothing to carry.\n' "${{ steps.check.outputs.base }}" > /tmp/body.md
+            fail "[sync-upstream] 补丁为空：$tag" /tmp/body.md
+          fi
           git fetch --depth 1 "https://github.com/$UPSTREAM.git" "refs/tags/$tag"
           git switch -c "$branch"
+          # two commits, as this fork's syncs have always been: a pure upstream
+          # tree, and this fork's patch on it. The next sync's base is the
+          # first of them, so the second is the patch it replays.
           git read-tree --reset -u FETCH_HEAD
           git rm -rq -f --ignore-unmatch .github/workflows
           git checkout HEAD -- .github/workflows
+          git add -A
+          git commit -q -m "upstream: $tag"
+          upstream_commit=$(git rev-parse --short HEAD)
+          echo "upstream tree: $upstream_commit"
           if ! git apply --3way /tmp/fork.patch; then
-            # This fork owns its pages whole: a conflict in one of them is
-            # that, not an upstream change to merge.
+            # this fork owns its pages whole: a conflict in one of them is
+            # that, not an upstream change to merge
             for f in $(git diff --name-only --diff-filter=U); do
               case "$f" in
                 README.md|README.zh-CN.md|docs/fork.md)
@@ -133,12 +149,12 @@ jobs:
                   ;;
               esac
             done
-            files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
-            if [ -n "$files" ] || [ -z "$(git diff --cached --name-only)" ]; then
+            conflicts=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            if [ -n "$conflicts" ]; then
               {
                 echo "Taking upstream \`$tag\` onto main did not replay this fork's patch."
                 echo
-                echo "Conflicted files: ${files:-none; see the run log}"
+                echo "Conflicted files: $conflicts"
                 echo
                 echo "Resolve by hand:"
                 echo
@@ -151,17 +167,15 @@ jobs:
                 echo
                 echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
               } > /tmp/body.md
-              notify "[sync-upstream] 上游同步冲突：$tag" /tmp/body.md
-              echo "::error::conflicts in $tag; main is untouched"
-              exit 1
+              fail "[sync-upstream] 上游同步冲突：$tag" /tmp/body.md
             fi
           fi
-          # This fork's patch carries the fixes that the upstream tree had
-          # not made when it was written. When upstream makes one itself, the
-          # replayed line is a duplicate map key: that line is the one vet
-          # names, and only those are dropped, until vet is clean.
+          # This fork's patch carries the fixes the upstream tree had not made
+          # when it was written. When upstream makes one itself, the replayed
+          # line is a duplicate map key: that line is the one vet names, and
+          # only those are dropped, until vet is clean.
           for i in $(seq 1 10); do
-            if go vet -tags gtk3 ./... > /tmp/vet.log 2>&1; then
+            if env -u GH_TOKEN go vet -tags gtk3 ./... > /tmp/vet.log 2>&1; then
               break
             fi
             dups=$(grep -oE '[^ ]+\.go:[0-9]+:[0-9]+: duplicate key' /tmp/vet.log | sort -u || true)
@@ -180,7 +194,7 @@ jobs:
               echo "dropped now-duplicate line $f:$n"
             done
           done
-          if ! go vet -tags gtk3 ./... > /tmp/vet.log 2>&1; then
+          if ! env -u GH_TOKEN go vet -tags gtk3 ./... > /tmp/vet.log 2>&1; then
             cat /tmp/vet.log
             {
               echo "Upstream \`$tag\` and this fork's patch do not fit: vet fails after the replay."
@@ -191,15 +205,13 @@ jobs:
               echo
               echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
             } > /tmp/body.md
-            notify "[sync-upstream] 补丁与上游不合：$tag" /tmp/body.md
-            echo "::error::vet fails after the replay; main is untouched"
-            exit 1
+            fail "[sync-upstream] 补丁与上游不合：$tag" /tmp/body.md
           fi
           # The other way the fork's patch goes stale: a route upstream adds
           # that the parity test asks a note on. The note is a line in that
           # test's own notYet map, and only the routes it names get one.
           for i in $(seq 1 5); do
-            if go test -tags gtk3 ./internal/cli -run '^TestEveryRouteHasACommandOrIsNamed$' -count=1 > /tmp/parity.log 2>&1; then
+            if env -u GH_TOKEN go test -tags gtk3 ./internal/cli -run '^TestEveryRouteHasACommandOrIsNamed$' -count=1 > /tmp/parity.log 2>&1; then
               break
             fi
             routes=$(sed -nE 's/.*: ([A-Z]+ \/[^ ]*) has no command:.*/\1/p' /tmp/parity.log | sort -u || true)
@@ -211,16 +223,26 @@ jobs:
             python3 /tmp/note-routes.py
             gofmt -w internal/cli/settings_parity_test.go
           done
+          if ! env -u GH_TOKEN go test -tags gtk3 ./internal/cli -run '^TestEveryRouteHasACommandOrIsNamed$' -count=1 > /tmp/parity.log 2>&1; then
+            cat /tmp/parity.log
+            {
+              echo "Upstream \`$tag\` still leaves a route the parity test has no note for."
+              echo
+              echo '```'
+              tail -30 /tmp/parity.log
+              echo '```'
+            } > /tmp/body.md
+            fail "[sync-upstream] 路由说明补不齐：$tag" /tmp/body.md
+          fi
           git add -A
-          git commit -q -m "upstream: $tag"
+          git commit -q -m "fork: carry the patches to upstream $tag"
           if ! git push -f origin "HEAD:$branch"; then
             {
               echo "Taking upstream \`$tag\` onto main could not push branch \`$branch\`."
               echo
               echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
             } > /tmp/body.md
-            notify "[sync-upstream] 无法推送同步分支：$tag" /tmp/body.md
-            exit 1
+            fail "[sync-upstream] 无法推送同步分支：$tag" /tmp/body.md
           fi
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
@@ -244,20 +266,21 @@ jobs:
           sha=$(git rev-parse HEAD)
           conclusion=""
           # asked for by hand: a token's pull request starts no run until
-          # someone approves it, which nothing does here. One run may flake,
-          # so a failed one is asked for once more.
+          # someone approves it, which nothing does here. A run may flake, so
+          # a failed one is asked for once more.
           for attempt in 1 2; do
             # the run this attempt starts, not the one before it: both carry
-            # the same head sha, and the earlier one is already completed
+            # the same head sha, and the earlier one is already completed.
+            # REST names the run id `id`; `databaseId` is the CLI's name.
             before=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha&per_page=1" \
-              --jq '.workflow_runs[0].databaseId // 0')
+              --jq '.workflow_runs[0].id // 0')
             gh workflow run test.yml --ref "$BRANCH"
             echo "asked Test for $sha (attempt $attempt, after run $before)"
             sleep 20
             conclusion=""
             for i in $(seq 1 30); do
               run=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha&per_page=10" \
-                --jq "[.workflow_runs[] | select(.status == \"completed\" and .databaseId > $before)][0] // empty")
+                --jq "[.workflow_runs[] | select(.status == \"completed\" and .id > $before)][0] // empty")
               if [ -n "$run" ]; then
                 conclusion=$(echo "$run" | jq -r '.conclusion')
                 echo "test run: $conclusion"
@@ -310,13 +333,19 @@ jobs:
             fi
             echo "notified: $title"
           }
+          close_issues() { # comment
+            for n in $(gh issue list --state open --search 'sync-upstream in:title' \
+              --json number --jq '.[].number' 2>/dev/null || true); do
+              gh issue close "$n" --comment "$1" || true
+            done
+          }
           sha=$(git rev-parse HEAD)
           latest=$(gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name')
           base=${latest#v}
           next="${base%.*}.$(( ${base##*.} + 1 ))"
-          draft=""
-          if draft=$(gh release view "v$next" --json isDraft --jq '.isDraft' 2>/dev/null); then
-            if [ "$draft" = "true" ]; then
+          drafted=""
+          if drafted=$(gh release view "v$next" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [ "$drafted" = "true" ]; then
               {
                 echo "v$next is a draft left by an earlier run, so the next version can't be published."
                 echo
@@ -326,6 +355,7 @@ jobs:
               exit 1
             fi
             echo "v$next is already released; nothing to publish"
+            close_issues "v$next 已存在；main 已同步到 \`${{ steps.up.outputs.tag }}\`。"
             exit 0
           fi
           echo "publishing v$next for $sha"
@@ -353,7 +383,4 @@ jobs:
             exit 1
           fi
           echo "released v$next"
-          for n in $(gh issue list --state open --search 'sync-upstream in:title' \
-            --json number --jq '.[].number' 2>/dev/null || true); do
-            gh issue close "$n" --comment "v$next is published for \`${{ steps.up.outputs.tag }}\`." || true
-          done
+          close_issues "v$next 已发布，main 已在 \`${{ steps.up.outputs.tag }}\`。"
