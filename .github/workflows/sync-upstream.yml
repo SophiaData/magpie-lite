@@ -42,6 +42,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # The same build the tests run with (test.yml): the GUI links GTK 3 and
+      # WebKitGTK 4.1, and only that build lists every route the parity test
+      # walks.
+      - name: Install GTK and WebKitGTK
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
       - name: The upstream tag to take
         id: up
         run: |
@@ -152,7 +161,7 @@ jobs:
           # replayed line is a duplicate map key: that line is the one vet
           # names, and only those are dropped, until vet is clean.
           for i in $(seq 1 10); do
-            if go vet -tags nogui ./... > /tmp/vet.log 2>&1; then
+            if go vet -tags gtk3 ./... > /tmp/vet.log 2>&1; then
               break
             fi
             dups=$(grep -oE '[^ ]+\.go:[0-9]+:[0-9]+: duplicate key' /tmp/vet.log | sort -u || true)
@@ -171,7 +180,7 @@ jobs:
               echo "dropped now-duplicate line $f:$n"
             done
           done
-          if ! go vet -tags nogui ./... > /tmp/vet.log 2>&1; then
+          if ! go vet -tags gtk3 ./... > /tmp/vet.log 2>&1; then
             cat /tmp/vet.log
             {
               echo "Upstream \`$tag\` and this fork's patch do not fit: vet fails after the replay."
@@ -190,7 +199,7 @@ jobs:
           # that the parity test asks a note on. The note is a line in that
           # test's own notYet map, and only the routes it names get one.
           for i in $(seq 1 5); do
-            if go test ./internal/cli -run '^TestEveryRouteHasACommandOrIsNamed$' -count=1 > /tmp/parity.log 2>&1; then
+            if go test -tags gtk3 ./internal/cli -run '^TestEveryRouteHasACommandOrIsNamed$' -count=1 > /tmp/parity.log 2>&1; then
               break
             fi
             routes=$(sed -nE 's/.*: ([A-Z]+ \/[^ ]*) has no command:.*/\1/p' /tmp/parity.log | sort -u || true)
