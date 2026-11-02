@@ -58,6 +58,20 @@ one diff to carry to the next upstream version.
   left to a person. A conflict, a red run, or a failed release leaves
   `main` alone and opens one issue whose title starts with
   `[sync-upstream]`; a release closes those again.
+- **A failed sync is handed over as an issue.** Every failure writes to one
+  issue labelled `upstream-sync` and assigned to its maintainer, and later
+  failures comment on it instead of opening another. The issue names the
+  tag, the step, the run, and — for a conflict — the files and the commands
+  to replay it by hand. What happens next depends on what it says:
+  - a conflict in code this fork also changed is resolved by hand on a
+    branch, then tested and fast-forwarded like a sync;
+  - a test this fork had patched that upstream changed is fixed the same
+    way, then replayed;
+  - upstream's own bug (its tests red on a clean tree) is left to upstream,
+    recorded in the issue, and the daily run tries the next tag;
+  - a failure to push or publish is re-run once the cause is known.
+  Nothing is published until a run on the exact commit passes, and every
+  path ends by closing the issue.
 - **A held request's report names the wait it was in.** The 504 goes out
   before the report is written and the client closes it at once, which ends
   the waits: the report takes what the request was waiting in before the

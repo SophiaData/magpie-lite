@@ -31,6 +31,9 @@ jobs:
       GH_REPO: ${{ github.repository }}
       UPSTREAM: yetone/magpie
       TAG_INPUT: ${{ inputs.tag }}
+      # The person a failed sync is handed to: the issue is labelled and
+      # assigned, so it reaches them rather than sitting in the repo unread.
+      ASSIGNEE: gtk96
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,7 +104,9 @@ jobs:
             if [ -n "$num" ]; then
               gh issue comment "$num" --body-file "$file" >/dev/null
             else
-              gh issue create --title "$title" --body-file "$file" >/dev/null
+              gh issue create --title "$title" --body-file "$file" \
+                --label upstream-sync --assignee "$ASSIGNEE" >/dev/null \
+                || gh issue create --title "$title" --body-file "$file" >/dev/null
             fi
             echo "notified: $title"
           }
@@ -259,7 +264,9 @@ jobs:
             if [ -n "$num" ]; then
               gh issue comment "$num" --body-file "$file" >/dev/null
             else
-              gh issue create --title "$title" --body-file "$file" >/dev/null
+              gh issue create --title "$title" --body-file "$file" \
+                --label upstream-sync --assignee "$ASSIGNEE" >/dev/null \
+                || gh issue create --title "$title" --body-file "$file" >/dev/null
             fi
             echo "notified: $title"
           }
@@ -329,7 +336,9 @@ jobs:
             if [ -n "$num" ]; then
               gh issue comment "$num" --body-file "$file" >/dev/null
             else
-              gh issue create --title "$title" --body-file "$file" >/dev/null
+              gh issue create --title "$title" --body-file "$file" \
+                --label upstream-sync --assignee "$ASSIGNEE" >/dev/null \
+                || gh issue create --title "$title" --body-file "$file" >/dev/null
             fi
             echo "notified: $title"
           }
