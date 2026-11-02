@@ -242,21 +242,30 @@ jobs:
             echo "notified: $title"
           }
           sha=$(git rev-parse HEAD)
-          # asked for by hand: a token's pull request starts no run until
-          # someone approves it, which nothing does here
-          gh workflow run test.yml --ref "$BRANCH"
-          echo "asked Test for $sha"
           conclusion=""
-          for i in $(seq 1 40); do
-            run=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha&per_page=10" \
-              --jq '[.workflow_runs[] | select(.status == "completed")][0] // empty')
-            if [ -n "$run" ]; then
-              conclusion=$(echo "$run" | jq -r '.conclusion')
-              echo "test run: $conclusion"
+          # asked for by hand: a token's pull request starts no run until
+          # someone approves it, which nothing does here. One run may flake,
+          # so a failed one is asked for once more.
+          for attempt in 1 2; do
+            gh workflow run test.yml --ref "$BRANCH"
+            echo "asked Test for $sha (attempt $attempt)"
+            sleep 20
+            conclusion=""
+            for i in $(seq 1 30); do
+              run=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha&per_page=10" \
+                --jq '[.workflow_runs[] | select(.status == "completed")][0] // empty')
+              if [ -n "$run" ]; then
+                conclusion=$(echo "$run" | jq -r '.conclusion')
+                echo "test run: $conclusion"
+                break
+              fi
+              echo "waiting for the tests ($i)"
+              sleep 60
+            done
+            if [ "$conclusion" = "success" ]; then
               break
             fi
-            echo "waiting for the tests ($i)"
-            sleep 60
+            echo "attempt $attempt did not pass (${conclusion:-none})"
           done
           if [ "$conclusion" != "success" ]; then
             {
