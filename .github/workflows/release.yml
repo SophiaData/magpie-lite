@@ -185,22 +185,19 @@ jobs:
           {
             echo "magpie $VERSION"
             echo
-            echo "Built from $GITHUB_REPOSITORY at ${GITHUB_SHA::12}."
+            echo "基于本仓库提交 ${GITHUB_SHA::12} 构建。"
             echo
-            echo "Automatic updates are off in this build: nothing is checked,"
-            echo "downloaded or installed by itself. Ask for a check from"
-            echo "Settings' Check, or run \`magpie update\`."
+            echo "本版自动更新是关闭的：不会自己检查、下载或重启。要检查更新，"
+            echo "在设置里点「检查」，或运行 \`magpie update\`。"
             echo
-            echo "## Install"
+            echo "## 安装"
             echo
-            echo "Download \`magpie-windows-amd64.exe\` (Windows desktop)."
-            echo "On macOS, \`magpie-darwin-arm64.dmg\` (Apple silicon) or"
-            echo "\`magpie-darwin-amd64.dmg\` (Intel) is a drag-to-Applications install;"
-            echo "\`magpie update\` fetches the matching \`.zip\`."
-            echo "Terminal builds use \`magpie-cli-<os>-<arch>\`."
-            echo "The macOS app is ad-hoc signed and not notarized; first launch may"
-            echo "need Gatekeeper approval (right-click > Open, or System Settings >"
-            echo "Privacy & Security > Open Anyway)."
+            echo "Windows：下载 \`magpie-windows-amd64.exe\`（ARM 机器用 \`magpie-windows-arm64.exe\`）。"
+            echo "macOS：\`magpie-darwin-arm64.dmg\`（Apple 芯片）或 \`magpie-darwin-amd64.dmg\`"
+            echo "（Intel），打开后把 magpie 拖进「应用程序」；\`magpie update\` 用的是对应的 \`.zip\`。"
+            echo "终端版：\`magpie-cli-<系统>-<架构>\`。"
+            echo "macOS 包为 ad-hoc 签名、未公证，首次打开可能被系统拦下，"
+            echo "在「系统设置 › 隐私与安全性」里点「仍要打开」（或右键图标选「打开」）即可。"
           } > notes.md
 
       - name: Build feed.json and notes.json
