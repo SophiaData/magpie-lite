@@ -247,13 +247,17 @@ jobs:
           # someone approves it, which nothing does here. One run may flake,
           # so a failed one is asked for once more.
           for attempt in 1 2; do
+            # the run this attempt starts, not the one before it: both carry
+            # the same head sha, and the earlier one is already completed
+            before=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha&per_page=1" \
+              --jq '.workflow_runs[0].databaseId // 0')
             gh workflow run test.yml --ref "$BRANCH"
-            echo "asked Test for $sha (attempt $attempt)"
+            echo "asked Test for $sha (attempt $attempt, after run $before)"
             sleep 20
             conclusion=""
             for i in $(seq 1 30); do
               run=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha&per_page=10" \
-                --jq '[.workflow_runs[] | select(.status == "completed")][0] // empty')
+                --jq "[.workflow_runs[] | select(.status == \"completed\" and .databaseId > $before)][0] // empty")
               if [ -n "$run" ]; then
                 conclusion=$(echo "$run" | jq -r '.conclusion')
                 echo "test run: $conclusion"
