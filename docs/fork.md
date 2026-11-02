@@ -53,9 +53,11 @@ one diff to carry to the next upstream version.
   run is fast-forwarded into `main`; then the next patch version is
   published. Lines this fork had patched that upstream has since fixed
   itself are dropped as `duplicate key` reports from `go vet`, and only
-  those; anything else vet finds is left to a person. A conflict, a red
-  run, or a failed release leaves `main` alone and opens one issue whose
-  title starts with `[sync-upstream]`; a release closes those again.
+  those; a route upstream adds that the parity test asks a note on gets
+  that line in the test's `notYet` map; anything else either check finds is
+  left to a person. A conflict, a red run, or a failed release leaves
+  `main` alone and opens one issue whose title starts with
+  `[sync-upstream]`; a release closes those again.
 - **A held request's report names the wait it was in.** The 504 goes out
   before the report is written and the client closes it at once, which ends
   the waits: the report takes what the request was waiting in before the
