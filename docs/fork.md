@@ -42,6 +42,17 @@ one diff to carry to the next upstream version.
   `test-macos.yml` daily and when asked — that takes about half an hour
   there, and a release waits for `test.yml`'s run. `docker.yml` builds and
   starts the image when asked, and pushes nothing.
+- **Upstream daily, taken in one go when it is green.**
+  `.github/workflows/sync-upstream.yml` looks for the newest stable upstream
+  tag once a day and when asked: it replays this fork's patch (the commit
+  `upstream: v…` to `main`) on that tag, keeps this fork's pages where they
+  conflict, and leaves `.github/workflows` as `main` has it — upstream's
+  pipelines are not adopted, and a push carrying them is refused to the
+  workflow token anyway. The tree is pushed to `sync/upstream-<version>`,
+  tested by a `workflow_dispatch` run of `test.yml` there, and only a green
+  run is fast-forwarded into `main`; then the next patch version is
+  published. A conflict, a red run, or a failed release leaves `main` alone
+  and opens one issue whose title starts with `[sync-upstream]`.
 - **A held request's report names the wait it was in.** The 504 goes out
   before the report is written and the client closes it at once, which ends
   the waits: the report takes what the request was waiting in before the

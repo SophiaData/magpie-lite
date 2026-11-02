@@ -18,7 +18,6 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
   issues: write
   actions: write
 
@@ -31,6 +30,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       UPSTREAM: yetone/magpie
+      TAG_INPUT: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,14 +41,15 @@ jobs:
         id: up
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag }}"
+          tag="$TAG_INPUT"
           if [ -z "$tag" ]; then
-            # one request, no clone: the tags' newest version first
-            tag=$(git ls-remote --tags --sort=-v:refname "https://github.com/$UPSTREAM.git" 'refs/tags/v0.1.*' \
-              | { grep -v '\^{}' || true; } | sed -n '1p' | sed 's#.*refs/tags/##')
+            # one request, no clone: the stable tags, newest version first
+            tag=$(git ls-remote --tags --sort=-v:refname "https://github.com/$UPSTREAM.git" 'refs/tags/v*' \
+              | { grep -v '\^{}' || true; } | sed 's#.*refs/tags/##' \
+              | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sed -n '1p')
           fi
-          if [ -z "$tag" ]; then
-            echo "no upstream tag found" >&2
+          if ! printf '%s' "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "no stable upstream tag (got '$tag')" >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -58,14 +59,16 @@ jobs:
         id: check
         run: |
           set -euo pipefail
+          tag="${{ steps.up.outputs.tag }}"
           base=$(git log -1 --format='%H %s' --grep='^upstream: ')
           if [ -z "$base" ]; then
             echo "this fork has no upstream commit" >&2
             exit 1
           fi
           have=${base#*upstream: }
-          echo "main is on upstream $have"
-          if [ "$have" = "${{ steps.up.outputs.tag }}" ]; then
+          newest=$(printf '%s\n%s\n' "$have" "$tag" | sort -V | tail -1)
+          echo "main is on upstream $have, newest is $tag"
+          if [ "$have" = "$tag" ] || [ "$newest" != "$tag" ]; then
             echo "take=false" >> "$GITHUB_OUTPUT"
             echo "nothing to do"
           else
@@ -78,36 +81,50 @@ jobs:
         if: steps.check.outputs.take == 'true'
         run: |
           set -euo pipefail
+          notify() { # title, body-file
+            local title="$1" file="$2" num
+            num=$(gh issue list --state open --search 'sync-upstream in:title' \
+              --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -n "$num" ]; then
+              gh issue comment "$num" --body-file "$file" >/dev/null
+            else
+              gh issue create --title "$title" --body-file "$file" >/dev/null
+            fi
+            echo "notified: $title"
+          }
           tag="${{ steps.up.outputs.tag }}"
           branch="sync/upstream-${tag#v}"
           git config user.name "upstream-sync"
           git config user.email "upstream-sync@users.noreply.github.com"
-          # this fork's own changes, against the upstream tree it was made on
-          git diff "${{ steps.check.outputs.base }}..HEAD" > /tmp/fork.patch
+          # this fork's own changes, against the upstream tree it was made on;
+          # its pipelines are its own too, so they are left as main has them
+          # (a push that carries workflow files is refused to the token)
+          git diff --binary "${{ steps.check.outputs.base }}..HEAD" -- . ':(exclude).github/workflows' > /tmp/fork.patch
           echo "fork patch: $(grep -c '^diff --git' /tmp/fork.patch) files"
           git fetch --depth 1 "https://github.com/$UPSTREAM.git" "refs/tags/$tag"
           git switch -c "$branch"
           git read-tree --reset -u FETCH_HEAD
-          git commit -q -m "upstream: $tag"
+          git rm -rq -f --ignore-unmatch .github/workflows
+          git checkout HEAD -- .github/workflows
           if ! git apply --3way /tmp/fork.patch; then
-            # This fork owns these whole: its pages and its pipelines. A
-            # conflict in one of them is that, not an upstream change to
-            # merge, so the fork's version is kept and the rest decided.
+            # This fork owns its pages whole: a conflict in one of them is
+            # that, not an upstream change to merge.
             for f in $(git diff --name-only --diff-filter=U); do
               case "$f" in
-                README.md|README.zh-CN.md|docs/fork.md|.github/workflows/release.yml|.github/workflows/test.yml|.github/workflows/test-macos.yml|.github/workflows/docker.yml)
-                  git checkout --theirs -- "$f" 2>/dev/null || true
-                  git add -- "$f"
-                  echo "kept this fork's $f"
+                README.md|README.zh-CN.md|docs/fork.md)
+                  if git checkout --theirs -- "$f" 2>/dev/null; then
+                    git add -- "$f"
+                    echo "kept this fork's $f"
+                  fi
                   ;;
               esac
             done
             files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
-            if [ -n "$files" ]; then
+            if [ -n "$files" ] || [ -z "$(git diff --cached --name-only)" ]; then
               {
-                echo "Taking upstream \`$tag\` onto main hit conflicts in this fork's patch."
+                echo "Taking upstream \`$tag\` onto main did not replay this fork's patch."
                 echo
-                echo "Conflicted files: $files"
+                echo "Conflicted files: ${files:-none; see the run log}"
                 echo
                 echo "Resolve by hand:"
                 echo
@@ -115,19 +132,27 @@ jobs:
                 echo "git fetch https://github.com/$UPSTREAM.git refs/tags/$tag"
                 echo "git switch -c sync/upstream-${tag#v} main"
                 echo "git read-tree --reset -u FETCH_HEAD"
-                echo "git commit -m 'upstream: $tag'"
                 echo "git diff <last upstream commit>..main | git apply -3"
                 echo '```'
                 echo
                 echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
-              } > /tmp/issue.md
-              gh issue create --title "上游同步冲突：$tag" --body-file /tmp/issue.md || true
-              exit 0
+              } > /tmp/body.md
+              notify "[sync-upstream] 上游同步冲突：$tag" /tmp/body.md
+              echo "::error::conflicts in $tag; main is untouched"
+              exit 1
             fi
           fi
           git add -A
-          git commit -q -m "fork: carry the patches to upstream $tag"
-          git push -f origin "HEAD:$branch"
+          git commit -q -m "upstream: $tag"
+          if ! git push -f origin "HEAD:$branch"; then
+            {
+              echo "Taking upstream \`$tag\` onto main could not push branch \`$branch\`."
+              echo
+              echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+            } > /tmp/body.md
+            notify "[sync-upstream] 无法推送同步分支：$tag" /tmp/body.md
+            exit 1
+          fi
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - name: Test the branch, then fast-forward main
@@ -136,18 +161,24 @@ jobs:
           BRANCH: ${{ steps.build.outputs.branch }}
         run: |
           set -euo pipefail
+          notify() { # title, body-file
+            local title="$1" file="$2" num
+            num=$(gh issue list --state open --search 'sync-upstream in:title' \
+              --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -n "$num" ]; then
+              gh issue comment "$num" --body-file "$file" >/dev/null
+            else
+              gh issue create --title "$title" --body-file "$file" >/dev/null
+            fi
+            echo "notified: $title"
+          }
           sha=$(git rev-parse HEAD)
-          # a pull request, because a push to any branch but main starts no
-          # test run; main waits for one on the commit it would publish
-          if [ -z "$(gh pr list --head "$BRANCH" --json number --jq '.[0].number // empty')" ]; then
-            gh pr create --base main --head "$BRANCH" \
-              --title "upstream: ${{ steps.up.outputs.tag }}" \
-              --body "Taking upstream \`${{ steps.up.outputs.tag }}\` onto main, with this fork's patch. Merged and released when the tests pass."
-          fi
-          pr=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
-          echo "PR #$pr, commit $sha"
+          # asked for by hand: a token's pull request starts no run until
+          # someone approves it, which nothing does here
+          gh workflow run test.yml --ref "$BRANCH"
+          echo "asked Test for $sha"
           conclusion=""
-          for i in $(seq 1 90); do
+          for i in $(seq 1 40); do
             run=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$sha&per_page=10" \
               --jq '[.workflow_runs[] | select(.status == "completed")][0] // empty')
             if [ -n "$run" ]; then
@@ -160,45 +191,66 @@ jobs:
           done
           if [ "$conclusion" != "success" ]; then
             {
-              echo "Upstream \`${{ steps.up.outputs.tag }}\` is on branch \`$BRANCH\` (PR #$pr), and its tests did not pass (conclusion: ${conclusion:-none})."
+              echo "Upstream \`${{ steps.up.outputs.tag }}\` is on branch \`$BRANCH\`, and its tests did not pass (conclusion: ${conclusion:-none})."
               echo
               echo "Main is untouched. Fix it on the branch, or wait for the next tag."
               echo
               echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
-            } > /tmp/issue.md
-            gh pr comment "$pr" --body-file /tmp/issue.md || true
-            gh issue create --title "上游同步未通过测试：${{ steps.up.outputs.tag }}" --body-file /tmp/issue.md || true
+            } > /tmp/body.md
+            notify "[sync-upstream] 上游同步未通过测试：${{ steps.up.outputs.tag }}" /tmp/body.md
+            echo "::error::tests did not pass; main is untouched"
             exit 1
           fi
           if ! git push origin "HEAD:main"; then
             {
-              echo "Upstream \`${{ steps.up.outputs.tag }}\` passed its tests on branch \`$BRANCH\` (PR #$pr), but main moved while it ran, so it wasn't taken."
+              echo "Upstream \`${{ steps.up.outputs.tag }}\` passed its tests on branch \`$BRANCH\`, but main moved while it ran, so it wasn't taken."
               echo
               echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
-            } > /tmp/issue.md
-            gh issue create --title "上游同步无法快进：${{ steps.up.outputs.tag }}" --body-file /tmp/issue.md || true
+            } > /tmp/body.md
+            notify "[sync-upstream] 无法快进 main：${{ steps.up.outputs.tag }}" /tmp/body.md
             exit 1
           fi
-          gh pr close "$pr" --comment "Fast-forwarded into main as $sha; released when its tests passed." || true
+          git push origin --delete "$BRANCH" || true
           echo "main is at $sha"
 
       - name: Release it
         if: steps.check.outputs.take == 'true' && steps.build.outputs.branch != ''
         run: |
           set -euo pipefail
+          notify() { # title, body-file
+            local title="$1" file="$2" num
+            num=$(gh issue list --state open --search 'sync-upstream in:title' \
+              --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -n "$num" ]; then
+              gh issue comment "$num" --body-file "$file" >/dev/null
+            else
+              gh issue create --title "$title" --body-file "$file" >/dev/null
+            fi
+            echo "notified: $title"
+          }
           sha=$(git rev-parse HEAD)
           latest=$(gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name')
           base=${latest#v}
           next="${base%.*}.$(( ${base##*.} + 1 ))"
-          if gh release view "v$next" >/dev/null 2>&1; then
+          draft=""
+          if draft=$(gh release view "v$next" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [ "$draft" = "true" ]; then
+              {
+                echo "v$next is a draft left by an earlier run, so the next version can't be published."
+                echo
+                echo "Delete it and run this again: \`gh release delete v$next\`"
+              } > /tmp/body.md
+              notify "[sync-upstream] 发版被草稿挡住：v$next" /tmp/body.md
+              exit 1
+            fi
             echo "v$next is already released; nothing to publish"
             exit 0
           fi
           echo "publishing v$next for $sha"
-          gh workflow run Release -f version="$next" --ref main
+          gh workflow run release.yml -f version="$next" --ref main
           conclusion=""
-          for i in $(seq 1 90); do
-            run=$(gh run list --workflow=Release --limit=5 \
+          for i in $(seq 1 40); do
+            run=$(gh run list --workflow=release.yml --limit=5 \
               --json databaseId,headSha,status,conclusion \
               --jq "[.[] | select(.headSha == \"$sha\" and .status == \"completed\")][0] // empty")
             if [ -n "$run" ]; then
@@ -214,8 +266,8 @@ jobs:
               echo "Upstream \`${{ steps.up.outputs.tag }}\` is on main ($sha), and publishing v$next did not pass (conclusion: ${conclusion:-none})."
               echo
               echo "Run: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
-            } > /tmp/issue.md
-            gh issue create --title "发版未通过：v$next" --body-file /tmp/issue.md || true
+            } > /tmp/body.md
+            notify "[sync-upstream] 发版未通过：v$next" /tmp/body.md
             exit 1
           fi
           echo "released v$next"
