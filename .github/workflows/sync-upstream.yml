@@ -1,11 +1,17 @@
 name: Sync upstream
 
-# Once a day: take the newest upstream tag onto main, test it there, and
-# publish it when the tests pass. A conflict, or tests that fail, leave main
-# alone and open an issue instead: a sync is never published unseen.
+# Daily: take the newest upstream tag onto main, test it there, and publish
+# it when the tests pass. A conflict, or tests that fail, leave main alone and
+# open an issue instead: a sync is never published unseen.
+#
+# GitHub runs a scheduled workflow late under load, and a day can pass with no
+# run at all (one took 7.8 hours once). Each run is idempotent — a main already
+# on the newest tag does nothing — so the day is split over three times.
 on:
   schedule:
     - cron: "0 3 * * *" # 11:00 in Shanghai
+    - cron: "0 9 * * *" # 17:00 in Shanghai
+    - cron: "0 15 * * *" # 23:00 in Shanghai
   workflow_dispatch:
     inputs:
       tag:
