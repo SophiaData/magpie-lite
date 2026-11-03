@@ -45,8 +45,17 @@ func init() {
 html.magpie-out-of-sight #probe{animation-play-state:paused!important}
 </style><i id="probe"></i><script>
 const probe = document.querySelector("#probe");
+// A Mac window hidden by orderOut leaves its page drawing: the app says so
+// and reports document.hidden itself (#4293), and so does this page, or the
+// report below could never be written (the window never tells the page).
+let outOfSight = false;
+for (const [k, off] of [["hidden", true], ["visibilityState", "hidden"]]) {
+  const own = Object.getOwnPropertyDescriptor(Document.prototype, k)?.get;
+  own && Object.defineProperty(Document.prototype, k, { configurable: true, get() { return outOfSight ? off : own.call(this); } });
+}
 window.magpieWindowVisibility = (visible) => {
-  document.documentElement.classList.toggle("magpie-out-of-sight", !visible);
+  outOfSight = !visible;
+  document.documentElement.classList.toggle("magpie-out-of-sight", outOfSight);
   document.dispatchEvent(new Event("visibilitychange"));
 };
 document.addEventListener("visibilitychange", () => {
