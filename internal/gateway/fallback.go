@@ -23,12 +23,14 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/provider"
@@ -1144,12 +1146,14 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
 // busyOf is the load c's plugin last reported for its model, and whether
 // that is over the percent over (settings.BusyLoad; 0 is off). A model
 // with no load reported, or none within plugin.LoadFresh, isn't busy:
-// unknown is never taken for idle nor for busy.
+// unknown is never taken for idle nor for busy. The plugin reports it by
+// its own id of the model, so a model the user lists by another is looked
+// up by that (axelburks on Discord).
 func busyOf(c candidate, over int, now time.Time) (float64, bool) {
 	if over <= 0 {
 		return 0, false
 	}
-	load, _, ok := plugin.ModelLoad(c.p.PluginProvider(), c.model, now)
+	load, _, ok := plugin.ModelLoad(c.p.PluginProvider(), c.p.OwnModelID(c.model), now)
 	return load, ok && load > float64(over)
 }
 
@@ -3982,9 +3986,13 @@ func streamStatus(msg string) int {
 // (its user, or its id in the routing trace), and pl with them. Nothing
 // else is tried in its place: a caller that names one account asks about
 // that one. The error says why none is left: no such account, one that
-// doesn't list the model, or one resting.
-func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, int, string) {
-	match := func(w Weighed) bool { return strings.EqualFold(want, w.Who) || want == w.ID }
+// doesn't list the model, or one resting. A name that isn't ASCII comes
+// percent-encoded (pinnedName), and matches as written or decoded.
+func pinTo(raw string, cands []candidate, pl planned) ([]candidate, planned, int, string) {
+	want := pinnedName(raw)
+	match := func(w Weighed) bool {
+		return strings.EqualFold(want, w.Who) || want == w.ID || strings.EqualFold(raw, w.Who) || raw == w.ID
+	}
 	var out []candidate
 	var order []Weighed
 	var rests []string
@@ -4031,6 +4039,21 @@ func pinTo(want string, cands []candidate, pl planned) ([]candidate, planned, in
 		msg += "; its accounts are " + strings.Join(have, ", ")
 	}
 	return nil, pl, http.StatusNotFound, msg
+}
+
+// pinnedName is the account AccountHeader names, raw as the request sent
+// it. A header value is ASCII on the wire, and fetch refuses to send one
+// that isn't, so a user named in other letters (北冥, plugins#615) is sent
+// percent-encoded (encodeURIComponent): it is read back decoded. A value
+// that isn't a valid encoding of UTF-8 is the name as written.
+func pinnedName(raw string) string {
+	if !strings.Contains(raw, "%") {
+		return raw
+	}
+	if d, err := url.PathUnescape(raw); err == nil && utf8.ValidString(d) {
+		return strings.TrimSpace(d)
+	}
+	return raw
 }
 
 // unservedTry says c's try failed as the vendor refusing the model as one

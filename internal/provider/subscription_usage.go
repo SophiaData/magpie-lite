@@ -121,6 +121,12 @@ type QuotaWindow struct {
 	// the menu bar shows only when picked (gui.trayChoices): money aside,
 	// one model's window, Cursor's Grok Bot.
 	TrayExtra bool `json:"trayExtra,omitempty"`
+	// HeldBy is, for the GUI only (WithHeldWindows), the name of another
+	// window of the account that is used up and stops it for every model
+	// ("7 days"): what is left of this one can't be used until that one
+	// starts again, so a sum over accounts counts it as nothing left
+	// (#4791).
+	HeldBy string `json:"heldBy,omitempty"`
 	// matches further scopes pools whose membership isn't one model word.
 	matches func(string) bool
 	// partial is set on the windows of a reading that may leave some out:
@@ -128,6 +134,11 @@ type QuotaWindow struct {
 	// rate_limit_event names one window at a time), never read whole by
 	// /usage — five hours alone there needn't mean no week.
 	partial bool
+	// noShare is set on a window set aside whose used the plugin left
+	// out: its Used is 0 for want of a share said, not a reading at 0, so
+	// quota history keeps no line for it (#4825). The card still tells
+	// the row's text and routing still sets it aside.
+	noShare bool
 }
 
 // SubscriptionQuota is provider-reported allowance usage. This is separate

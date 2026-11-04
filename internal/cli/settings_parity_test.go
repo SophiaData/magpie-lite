@@ -163,7 +163,6 @@ var cliForRoute = map[string]string{
 }
 
 var notYet = map[string]string{
-	"GET /api/quit":                              W,  // api.go: the window's own; a terminal ends magpie with a signal
 	"POST /api/agent-fast":                       A,  // agent_models.go
 	"POST /api/agent-models/{id}":                A,  // agent_models.go
 	"GET /api/agents/cli":                        A,  // api.go
@@ -173,6 +172,7 @@ var notYet = map[string]string{
 	"GET /api/drift":                             A,  // api.go
 	"GET /api/notices":                           W,  // api.go
 	"GET /api/omarchy":                           W,  // api.go
+	"GET /api/quit":                              W,  // api.go: the window's Quit question
 	"GET /api/state":                             W,  // api.go
 	"POST /api/agents/{action}/{id}":             A,  // api.go
 	"POST /api/agents/arrange":                   W,  // api.go

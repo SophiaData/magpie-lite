@@ -1005,9 +1005,7 @@ func TestCRTidyTwentyFourMBLine(t *testing.T) {
 			} else if string(got) != c.want {
 				t.Fatal("the line came out other than wanted")
 			}
-			// the bill is the hot path's, and the race detector's own
-			// bookkeeping isn't it
-			if !raceOn && elapsed > 8*time.Second {
+			if elapsed > 8*time.Second {
 				t.Fatalf("24MB took %s", elapsed)
 			}
 		})
