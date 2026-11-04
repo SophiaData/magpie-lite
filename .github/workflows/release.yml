@@ -182,23 +182,68 @@ jobs:
       - name: The release's notes
         run: |
           set -euo pipefail
-          {
-            echo "magpie $VERSION"
-            echo
-            echo "基于本仓库提交 ${GITHUB_SHA::12} 构建。"
-            echo
-            echo "本版自动更新是关闭的：不会自己检查、下载或重启。要检查更新，"
-            echo "在设置里点「检查」，或运行 \`magpie update\`。"
-            echo
-            echo "## 安装"
-            echo
-            echo "Windows：下载 \`magpie-windows-amd64.exe\`（ARM 机器用 \`magpie-windows-arm64.exe\`）。"
-            echo "macOS：\`magpie-darwin-arm64.dmg\`（Apple 芯片）或 \`magpie-darwin-amd64.dmg\`"
-            echo "（Intel），打开后把 magpie 拖进「应用程序」；\`magpie update\` 用的是对应的 \`.zip\`。"
-            echo "终端版：\`magpie-cli-<系统>-<架构>\`。"
-            echo "macOS 包为 ad-hoc 签名、未公证，首次打开可能被系统拦下，"
-            echo "在「系统设置 › 隐私与安全性」里点「仍要打开」（或右键图标选「打开」）即可。"
-          } > notes.md
+          # What this build carries: the upstream release it took, and the
+          # commits this fork added on top of the release before it.
+          python3 - <<'PY'
+          import os, subprocess
+
+          version = os.environ["VERSION"]
+          sha = os.environ["GITHUB_SHA"]
+          repo = os.environ["GH_REPO"]
+
+          def gh(*args):
+              r = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
+              return r.stdout.strip() if r.returncode == 0 else ""
+
+          upstream = ""
+          subject = subprocess.run(
+              ["git", "log", "-1", "--format=%s", "--grep=^upstream: "],
+              capture_output=True, text=True, encoding="utf-8").stdout.strip()
+          if subject.startswith("upstream: "):
+              upstream = subject[len("upstream: "):]
+
+          lines = [f"magpie {version}", ""]
+          built = f"基于本仓库提交 {sha[:12]} 构建。"
+          if upstream:
+              built = f"基于本仓库提交 {sha[:12]} 构建，包含上游 {upstream} 的改动。"
+          lines += [built, ""]
+
+          if upstream:
+              body = gh("api", f"repos/yetone/magpie/releases/tags/{upstream}", "--jq", ".body")
+              if body:
+                  zh = body.split("<!-- lang:zh -->", 1)[1] if "<!-- lang:zh -->" in body else body
+                  cut = zh.find("### 安装")
+                  if cut >= 0:
+                      zh = zh[:cut]
+                  zh = zh.strip()
+                  if zh:
+                      lines += [f"## 上游变更（{upstream}）", "", zh, ""]
+
+          prev = gh("api", f"repos/{repo}/releases/latest", "--jq", ".tag_name")
+          if prev:
+              out = gh("api", f"repos/{repo}/compare/{prev}...{sha}", "--jq",
+                       '.commits[].commit.message | split("\\n")[0]')
+              commits = [c for c in out.splitlines() if c and not c.startswith("upstream: ")]
+              if commits:
+                  lines += ["## 本仓库改动", ""]
+                  lines += [f"- {c}" for c in commits[:40]]
+                  lines += [""]
+
+          lines += [
+              "本版自动更新是关闭的：不会自己检查、下载或重启。要检查更新，",
+              "在设置里点「检查」，或运行 `magpie update`。",
+              "",
+              "## 安装",
+              "",
+              "Windows：下载 `magpie-windows-amd64.exe`（ARM 机器用 `magpie-windows-arm64.exe`）。",
+              "macOS：`magpie-darwin-arm64.dmg`（Apple 芯片）或 `magpie-darwin-amd64.dmg`",
+              "（Intel），打开后把 magpie 拖进「应用程序」；`magpie update` 用的是对应的 `.zip`。",
+              "终端版：`magpie-cli-<系统>-<架构>`。",
+              "macOS 包为 ad-hoc 签名、未公证，首次打开可能被系统拦下，",
+              "在「系统设置 › 隐私与安全性」里点「仍要打开」（或右键图标选「打开」）即可。",
+          ]
+          open("notes.md", "w", encoding="utf-8").write("\n".join(lines) + "\n")
+          PY
 
       - name: Build feed.json and notes.json
         run: |
