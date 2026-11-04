@@ -174,6 +174,13 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # The notes step reads the branch's history (the upstream tag this build
+      # took, and the commits since the last release), so it needs the repo,
+      # not only the artifacts.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -193,14 +200,21 @@ jobs:
 
           def gh(*args):
               r = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
+              if r.returncode != 0:
+                  print(f"::warning::gh {' '.join(args)} failed: {r.stderr.strip()[:200]}")
               return r.stdout.strip() if r.returncode == 0 else ""
 
           upstream = ""
-          subject = subprocess.run(
+          log = subprocess.run(
               ["git", "log", "-1", "--format=%s", "--grep=^upstream: "],
-              capture_output=True, text=True, encoding="utf-8").stdout.strip()
+              capture_output=True, text=True, encoding="utf-8")
+          if log.returncode != 0:
+              print(f"::warning::git log failed: {log.stderr.strip()[:200]}")
+          subject = log.stdout.strip()
           if subject.startswith("upstream: "):
               upstream = subject[len("upstream: "):]
+          else:
+              print("::warning::no 'upstream:' commit in the history: the notes leave out the upstream change")
 
           lines = [f"magpie {version}", ""]
           built = f"基于本仓库提交 {sha[:12]} 构建。"
@@ -219,7 +233,12 @@ jobs:
                   if zh:
                       lines += [f"## 上游变更（{upstream}）", "", zh, ""]
 
-          prev = gh("api", f"repos/{repo}/releases/latest", "--jq", ".tag_name")
+          # The release before this one; a rerun of this version finds itself
+          # first and skips it.
+          tags = gh("api", f"repos/{repo}/releases?per_page=20", "--jq", ".[].tag_name")
+          prev = next((t for t in tags.splitlines() if t and t != f"v{version}"), "")
+          if not prev:
+              print("::warning::no earlier release found: the notes leave out this fork's commits")
           if prev:
               out = gh("api", f"repos/{repo}/compare/{prev}...{sha}", "--jq",
                        '.commits[].commit.message | split("\\n")[0]')
