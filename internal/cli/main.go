@@ -165,7 +165,7 @@ const usage = `magpie — one place to pick every agent's model
   magpie update [check] [--proxy <url>] [--mirror <prefix>]
                                   install the newest release (check: only say if there is one); --proxy: an
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
-                                  before the github.com URL (none unless given; still checked against the release's own SHA-256)
+                                  before the github.com URL (none unless given; still checked against usemagpie.ai's SHA-256)
   magpie update mirror [<prefix>|off]  the mirror every update, the app's own too, is downloaded through
   magpie update channel [stable|every]  which versions updates offer: stable (one a week, an urgent one at
                                   once) or every version as it comes out (the default)
@@ -315,6 +315,11 @@ func run(args []string) error {
 	// what a shell's agy runs (agy_cli.go): every argument after run is
 	// agy's, --help too, and nothing is moved or started first
 	if ok, err := agyCmd(args); ok {
+		return err
+	}
+	// claude-magpie (claude_launch_cli.go): every argument after run is
+	// claude's, --help too
+	if ok, err := claudeLaunchCmd(args); ok {
 		return err
 	}
 	// before anything is read, moved or started: --help on any command
