@@ -1,6 +1,6 @@
-// Package update keeps magpie current. This build's releases are published
-// in its own GitHub repository (Repo), and feed.json in the newest one
-// describes it: its version, notes, and every file with its SHA-256.
+// Package update keeps magpie current. Builds are published as GitHub
+// releases of yetone/magpie-releases; usemagpie.ai/api/latest describes the
+// newest one: its version, notes, and every file with its SHA-256.
 //
 // The macOS app replaces its own bundle: the new zip is downloaded, checked
 // against its hash, unpacked, and accepted only if it is signed by the same
@@ -35,35 +35,20 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/rosetta"
 	"github.com/yetone/magpie/internal/source"
 )
 
-// Site is this build's home: the GitHub repository its releases are
-// published in.
-const Site = "https://github.com/SophiaData/magpie-lite"
+// Site is magpie's home; its /api/latest is the update feed.
+const Site = "https://usemagpie.ai"
 
-// Repo is the GitHub repository (owner/name) this build's releases and
-// notes come from.
-const Repo = "SophiaData/magpie-lite"
-
-// AutoUpdateDisabled is this build's own choice: it never asks for a newer
-// version by itself, on any setting. A check the user asks for (Settings'
-// Check, `magpie update`) still works.
-const AutoUpdateDisabled = true
-
-// feedAsset is a file this build's newest release carries: release.yml
-// builds the update feed and the notes feed beside the binaries, so
-// releases/latest/download always serves the newest one.
-const feedAsset = "https://github.com/" + Repo + "/releases/latest/download/"
-
-// Feed is where the newest release is described, in this build's own
-// releases. MAGPIE_UPDATE_FEED points it elsewhere, for testing an update
-// against a local server.
+// Feed is where the newest release is described. MAGPIE_UPDATE_FEED points
+// it elsewhere, for testing an update against a local server.
 func Feed() string {
 	if f := os.Getenv("MAGPIE_UPDATE_FEED"); f != "" {
 		return f
 	}
-	return feedAsset + "feed.json"
+	return Site + "/api/latest"
 }
 
 // Release is one published version.
@@ -215,14 +200,35 @@ func parse(v string) *semver {
 // one.
 var GUI bool
 
-// AppAsset and BinaryAsset name the files this machine would install.
-func AppAsset() string { return "magpie-darwin-" + runtime.GOARCH + ".zip" }
-func BinaryAsset() string {
-	name := "magpie-cli-" + runtime.GOOS + "-" + runtime.GOARCH
-	if GUI && runtime.GOOS != "darwin" {
-		name = "magpie-" + runtime.GOOS + "-" + runtime.GOARCH
+// goos and goarch are the system this magpie was built for, and
+// translated says it runs under Rosetta; tests set them.
+var (
+	goos, goarch = runtime.GOOS, runtime.GOARCH
+	translated   = rosetta.Translated
+)
+
+// arch is the architecture an update installs: this build's, but Apple
+// silicon's for an Intel magpie under Rosetta. Kept on the Intel build,
+// such a Mac ran the local masking model in Go under translation, with no
+// CoreML, at 150% of a core (cdredfox on Discord), and every update
+// fetched the Intel build again. Installing Apple silicon's is the same
+// swap: the zip's magpie.app is renamed over the bundle, signed by the
+// same team (sameSigner), and the bare binary is renamed over itself.
+func arch() string {
+	if goos == "darwin" && goarch == "amd64" && translated() {
+		return "arm64"
 	}
-	if runtime.GOOS == "windows" {
+	return goarch
+}
+
+// AppAsset and BinaryAsset name the files this machine would install.
+func AppAsset() string { return "magpie-darwin-" + arch() + ".zip" }
+func BinaryAsset() string {
+	name := "magpie-cli-" + goos + "-" + arch()
+	if GUI && goos != "darwin" {
+		name = "magpie-" + goos + "-" + arch()
+	}
+	if goos == "windows" {
 		name += ".exe"
 	}
 	return name
@@ -506,7 +512,7 @@ func runAfterExit(pid int, command string) error {
 	cmd := proc.Command("/bin/sh", "-c", script)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	detach(cmd)
-	return cmd.Start()
+	return proc.StartReaped(cmd)
 }
 
 // relaunchOpen is the open command Relaunch runs for bundle. -n asks
@@ -1303,7 +1309,7 @@ func OpenBeside(bundle string, window, quiet bool) error {
 	cmd := proc.Command("/bin/sh", "-c", retried(openBeside(bundle, window, quiet), openWaits))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
 	detach(cmd)
-	return cmd.Start()
+	return proc.StartReaped(cmd)
 }
 
 // openBeside is the open command OpenBeside runs for bundle.

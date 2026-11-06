@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux release-darwin clean dev dev-once
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -67,34 +67,6 @@ app: build
 	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > magpie.app/Contents/Info.plist
 	@echo "  magpie.app"
 
-# macOS desktop release: bundle, ad-hoc sign, a zip for AppAsset(), and a
-# dmg for manual installs. Ad-hoc signing verifies integrity only; it does
-# not identify a developer or team, and the app is not notarized, so first
-# launch may need Gatekeeper approval.
-DARWINVER = $(shell echo $(VERSION) | sed -E 's/^v//; s/[^0-9.].*//')
-release-darwin:
-	@rm -rf dist/magpie.app
-	@mkdir -p dist/magpie.app/Contents/MacOS dist/magpie.app/Contents/Resources
-	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie.app/Contents/MacOS/magpie .
-	@cp build/darwin/magpie.icns dist/magpie.app/Contents/Resources/magpie.icns
-	@cp build/darwin/Assets.car dist/magpie.app/Contents/Resources/Assets.car
-	@sed 's/@VERSION@/$(or $(DARWINVER),0.0.0)/' build/darwin/Info.plist > dist/magpie.app/Contents/Info.plist
-	@codesign --force --deep --sign - --timestamp=none dist/magpie.app
-	@codesign --verify --deep --strict dist/magpie.app
-	@ditto -c -k --sequesterRsrc --keepParent dist/magpie.app dist/magpie-darwin-$(shell go env GOARCH).zip
-	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt && mkdir -p dist/magpie-mnt
-	@hdiutil create -size 4g -fs HFS+ -volname "magpie $(or $(DARWINVER),0.0.0)" -ov -type UDIF dist/magpie-rw.dmg
-	@hdiutil attach -nobrowse -readwrite -mountpoint dist/magpie-mnt dist/magpie-rw.dmg
-	@ditto dist/magpie.app dist/magpie-mnt/magpie.app
-	@codesign --verify --deep --strict dist/magpie-mnt/magpie.app
-	@ln -s /Applications dist/magpie-mnt/Applications
-	@cp build/darwin/magpie.icns dist/magpie-mnt/.VolumeIcon.icns
-	@SetFile -c icnC -a C dist/magpie-mnt || echo "  (no SetFile: the dmg keeps the plain disk icon)"
-	@hdiutil detach dist/magpie-mnt
-	@rm -f dist/magpie-darwin-$(shell go env GOARCH).dmg
-	@hdiutil convert dist/magpie-rw.dmg -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
-	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt
-
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png
 	@go run build/icon/gen.go tray-flap internal/gui/trayflap
@@ -112,7 +84,8 @@ icons:
 		go run build/icon/gen.go app $$((s*2)) build/darwin/magpie.iconset/icon_$${s}x$${s}@2x.png; \
 	done
 	@iconutil -c icns build/darwin/magpie.iconset -o build/darwin/magpie.icns && rm -rf build/darwin/magpie.iconset
-	@# macOS 26 draws the Dock icon from AppIcon.icon, light and dark (Xcode 26's actool);
+	@# macOS 26 draws the Dock icon from AppIcon.icon (Xcode 26's actool) in every icon
+	@# style: light, dark, and clear or tinted, where the bird's luminance takes the tint;
 	@# the compiled Assets.car is kept in the tree so a release needn't have it
 	@go run build/icon/gen.go glyph 1024 build/darwin/AppIcon.icon/Assets/magpie.png
 	@rm -rf build/darwin/actool && mkdir -p build/darwin/actool

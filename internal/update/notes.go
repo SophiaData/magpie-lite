@@ -25,33 +25,43 @@ type Note struct {
 	Pending bool `json:"pending,omitempty"`
 }
 
-// NotesFeed is where the notes of past releases are listed: this build's
-// own releases. MAGPIE_NOTES_FEED points it elsewhere.
+// NotesFeed is where the notes of past releases are listed: beside the
+// update feed, on magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
 func NotesFeed() string {
 	if f := os.Getenv("MAGPIE_NOTES_FEED"); f != "" {
 		return f
 	}
-	return feedAsset + "notes.json"
+	return Site + "/api/notes"
 }
 
-// ReleasePage is version's page on GitHub, where its notes are.
+// ReleasePage is version's page on GitHub, where its notes are when the
+// site can't give them (#661).
 func ReleasePage(version string) string {
-	return "https://github.com/" + Repo + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	return "https://github.com/yetone/magpie-releases/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 // NotesBetween asks the site for the notes of every release after after
 // (none when "") up to and including upto, newest first, in lang (see
 // InLang).
 func NotesBetween(ctx context.Context, after, upto, lang string) ([]Note, error) {
+	notes, _, err := NotesBetweenTotal(ctx, after, upto, lang)
+	return notes, err
+}
+
+// NotesBetweenTotal is NotesBetween with how many releases there are in
+// all before MostNotes keeps the newest, so a list cut short can say so
+// (sujingshen on X: 156 releases behind read "40 releases").
+func NotesBetweenTotal(ctx context.Context, after, upto, lang string) ([]Note, int, error) {
 	q := url.Values{"upto": {upto}}
 	if after != "" {
 		q.Set("after", after)
 	}
 	notes, err := askNotes(ctx, q, lang)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return Between(notes, after, upto), nil
+	all := between(notes, after, upto)
+	return capNotes(all), len(all), nil
 }
 
 // BackCounts are the ranges Settings' What's new offers besides the notes
@@ -156,9 +166,9 @@ func MostNotes() int {
 // Stable is whether Settings' Update channel is Stable: the update feed is
 // asked for a version a week, the newest that had been out three days as
 // the week began (Monday 00:00 UTC), or an urgent one (a security hole, a
-// ban risk, lost data) as soon as it is out. This build's feed is a static
-// file of the newest release (see Feed), which ignores the channel: Stable
-// lists what every channel lists, the newest release.
+// ban risk, lost data) as soon as it is out. usemagpie.ai chooses it from
+// the release list (site/worker.js, "The Stable channel"); a release is
+// urgent when a line of its notes starts with "**Urgent release:**".
 func Stable() bool { return settings.Load().UpdateChannel == settings.UpdateStable }
 
 // withChannel is feed asking for Stable's release on the Stable channel,
@@ -181,6 +191,19 @@ func withChannel(feed string) string {
 // upto, newest first, at most MostNotes; with after "" only upto's. Each
 // one's Install section is taken out, and one left empty is dropped.
 func Between(notes []Note, after, upto string) []Note {
+	return capNotes(between(notes, after, upto))
+}
+
+// capNotes keeps the newest MostNotes of notes, newest first.
+func capNotes(notes []Note) []Note {
+	if most := MostNotes(); len(notes) > most {
+		return notes[:most]
+	}
+	return notes
+}
+
+// between is Between with every release kept.
+func between(notes []Note, after, upto string) []Note {
 	var out []Note
 	seen := map[string]bool{}
 	for _, n := range notes {
@@ -203,9 +226,6 @@ func Between(notes []Note, after, upto string) []Note {
 		out = append(out, n)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return Newer(out[i].Version, out[j].Version) })
-	if most := MostNotes(); len(out) > most {
-		out = out[:most]
-	}
 	return out
 }
 

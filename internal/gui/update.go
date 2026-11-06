@@ -84,6 +84,12 @@ type updater struct {
 	autoRestart func() bool
 	autoSkip    string
 	waitAsked   bool // the restart waiting was a click's
+	// installed: this process put an update in (install), and is leaving
+	// for it; followed: it is restarting into one another magpie put in
+	// (restartBeside). Either way what is on disk is no longer another's
+	// for followReplaced to restart into.
+	installed bool
+	followed  bool
 }
 
 type updateJSON struct {
@@ -128,35 +134,27 @@ type updateJSON struct {
 
 var updates = &updater{}
 
-// autoUpdatesDisabled keeps this build from ever asking for a newer
-// version by itself: no start-up check, no clock, no download, no restart.
-// The version row's Check and `magpie update` still work, so an update is
-// the user's own move.
-const autoUpdatesDisabled = update.AutoUpdateDisabled
-
 // updateDue is whether the feed is asked by itself now, the last time it
 // was asked at last: never with automatic updates off, otherwise once the
 // settings' interval is up. The settings are read again each minute, so
 // one changed (in Settings or the CLI) counts from the last check.
 func updateDue(s settings.Settings, last, now time.Time) bool {
-	if autoUpdatesDisabled {
-		return false
-	}
 	return !s.NoAutoUpdate && now.Sub(last) >= time.Duration(s.UpdateEvery)*time.Minute
 }
 
 func (u *updater) start() {
 	u.place(runtime.GOOS, update.GUI)
 	gateway.SetRestarter(u.restartBeside) // magpie update in a terminal
+	go u.followReplaced(backendCtx)       // the app's or magpie web's update (visamzh on X)
 	if u.bundle != "" {
 		go update.ForgetOldStaging(u.bundle) // #3965
 	}
-	if autoUpdatesDisabled {
-		return
-	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
-		for {
+		// until this one has handed the gateway to the new version: the
+		// copy an update left finishing its requests checks for, and
+		// restarts into, nothing (#4938)
+		for backendCtx.Err() == nil {
 			u.mu.Lock()
 			last := u.asked
 			u.mu.Unlock()
@@ -366,7 +364,7 @@ func (u *updater) latestStale() bool {
 // stale "latest", unless automatic updates are off. It doesn't wait for
 // the answer: the row shows checking, and reads again.
 func (u *updater) refreshLatest(s settings.Settings) {
-	if autoUpdatesDisabled || s.NoAutoUpdate {
+	if s.NoAutoUpdate {
 		return
 	}
 	u.mu.Lock()
@@ -513,7 +511,7 @@ func (u *updater) install(ask bool) bool {
 		// another magpie updated the binary after this one started: it is
 		// in, and swapping this one's download in would move it aside (the
 		// download is left: it may be the other's, staged at the same name)
-		u.staged = ""
+		u.staged, u.installed = "", true
 		return true
 	}
 	if u.staged == "" {
@@ -544,7 +542,7 @@ func (u *updater) install(ask bool) bool {
 		}
 		return false
 	}
-	u.staged = ""
+	u.staged, u.installed = "", true
 	return true
 }
 
@@ -559,6 +557,7 @@ func (u *updater) wontStart(err error) {
 	}
 	b := update.NoteBlocked(v, err)
 	u.blocked, u.state, u.aside = &b, "blocked", ""
+	u.installed = false // this one runs on, back in its place
 	u.err = err.Error()
 }
 
@@ -694,12 +693,18 @@ func updateRoutes(mux *http.ServeMux, w Windows) {
 		out := struct {
 			Latest   string        `json:"latest,omitempty"`
 			Releases []update.Note `json:"releases"`
-			Error    string        `json:"error,omitempty"`
+			// Total: how many releases there are since this one when
+			// more than Releases holds (MostNotes keeps the newest)
+			Total int    `json:"total,omitempty"`
+			Error string `json:"error,omitempty"`
 		}{Latest: j.Latest, Releases: []update.Note{}}
 		if j.Latest != "" {
-			notes, err := fetchNotes(r.Context(), Version, j.Latest, pageLang(r))
+			notes, total, err := fetchNotes(r.Context(), Version, j.Latest, pageLang(r))
 			if len(notes) == 0 && strings.TrimSpace(j.Notes) != "" {
 				notes = []update.Note{{Version: j.Latest, Notes: j.Notes, URL: j.URL}}
+			}
+			if total > len(notes) {
+				out.Total = total
 			}
 			if len(notes) > 0 {
 				out.Releases = notes

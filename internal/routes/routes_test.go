@@ -165,12 +165,38 @@ func TestLeastUsedSeatsWithNoShare(t *testing.T) {
 	}
 }
 
-// Weekly pace: the most of a week left per hour first; one running low
+// Use before expiry: the most of a week left per hour first; one running low
 // after, whatever its pace.
 func TestPace(t *testing.T) {
 	s := []Seat{{Key: "slow", Pace: 1}, {Key: "low", Used: 95, Pace: 50}, {Key: "fast", Pace: 10}}
 	if got := keys(s, Apply(Pace, "p", s)); !slices.Equal(got, []string{"fast", "slow", "low"}) {
 		t.Fatalf("pace: %v", got)
+	}
+}
+
+// A seat at 90% of its week alone (WeekLow) keeps its place in Smart and
+// Use before expiry: renewing sooner, or with more per hour to lose, it
+// goes ahead of one with room (ysicing_01858 on Discord). Least used first
+// still puts it by its share; at 98% it is all but used up in every one.
+func TestWeekLowKeepsItsPlace(t *testing.T) {
+	now := time.Now()
+	s := []Seat{
+		{Key: "room", Known: true, Used: 30, Soon: []time.Time{now.Add(48 * time.Hour)}, Pace: 70.0 / 48},
+		{Key: "week", Known: true, Used: 91, WeekLow: true, Soon: []time.Time{now.Add(3 * time.Hour)}, Pace: 3},
+	}
+	for name, st := range map[string]Strategy{"smart": Smart, "pace": Pace} {
+		if got := keys(s, Apply(st, "p", s)); !slices.Equal(got, []string{"week", "room"}) {
+			t.Errorf("%s: %v, want [week room]", name, got)
+		}
+	}
+	if got := keys(s, Apply(LeastUsed, "p", s)); !slices.Equal(got, []string{"room", "week"}) {
+		t.Errorf("least used: %v, want [room week]", got)
+	}
+	s[1].Used = 98
+	for name, st := range map[string]Strategy{"smart": Smart, "pace": Pace} {
+		if got := keys(s, Apply(st, "p", s)); !slices.Equal(got, []string{"room", "week"}) {
+			t.Errorf("%s at 98%%: %v, want [room week]", name, got)
+		}
 	}
 }
 
@@ -195,7 +221,7 @@ func TestWeighted(t *testing.T) {
 
 // Of those all but used up, one that goes on on its credits (a Codex
 // account holding them) goes before those with nothing left, though it
-// has used more, in Smart, Weekly pace and Least used alike; still after
+// has used more, in Smart, Use before expiry and Least used alike; still after
 // every one with room or running low, its allowance spent before its
 // credits are.
 func TestCreditsFirstOfTheSpent(t *testing.T) {

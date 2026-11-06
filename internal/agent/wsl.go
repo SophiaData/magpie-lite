@@ -441,9 +441,9 @@ var wslKinds = []wslKind{
 					// over several accounts magpie routes, so they are
 					// offered via magpie too, as on a live Codex (#1603)
 					if codexFailover() {
-						return withVia(group("OpenAI", options(ownCodex(), "")), "codex", "")
+						return withVia(group("OpenAI", codexNamed(ownCodex())), "codex", "")
 					}
-					own := codexInMagpie(group("OpenAI", options(ownCodex(), "")))
+					own := codexInMagpie(group("OpenAI", codexNamed(ownCodex())))
 					return append(own, codexViaMagpieFor(own)...)
 				}
 			case "effort":
@@ -510,8 +510,9 @@ var wslKinds = []wslKind{
 				return func(cur map[string]string) []Option {
 					return joinedVia(group("Claude Code", claudeOwn(cur["model"], nil, catalog.Provider("anthropic"))), claudeViaShared(false), [2]string{"\x00claude-via", "\x00asleep"})
 				}
-			case "effort", "ultracode":
-				// their own options read only what was last seen
+			case "effort", "ultracode", "statusline":
+				// their own options read only what was last seen; magpie's
+				// status line isn't offered in a distro
 				return nil
 			case "login":
 				// its sign-in, while the model last seen is magpie's
@@ -1787,10 +1788,11 @@ func parseProbe(name, out string) *distro {
 	// the default route of a distro whose 127.0.0.1 is Windows' is
 	// Windows' own next hop (consomme: 198.18.0.2 under a TUN proxy,
 	// #1230), not Windows: an agent left on it is moved to 127.0.0.1
-	// (wslMovedFrom)
-	if wslrun.HostLoopback(d.Net) {
-		d.Gateway = ""
-	}
+	// (wslMovedFrom). A bridged distro's is the LAN's router: Windows is
+	// at its address on the bridge's adapter (wslrun.HostAt), and an agent
+	// an older magpie pointed at the router is written over on the next
+	// sync, the router being among the addresses it was seen at (Was)
+	d.Gateway = wslrun.HostAt(d.Net, d.Gateway, gateway.WSLNets())
 	return d
 }
 
