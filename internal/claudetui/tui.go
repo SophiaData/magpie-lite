@@ -438,7 +438,14 @@ func (s *shim) lastScreen() string {
 		p = strings.Join(strings.Fields(now), " ")
 	}
 	if p == "" {
-		return fmt.Sprintf("nothing on its screen (%d bytes read)", s.nread.Load())
+		n := s.nread.Load()
+		why := fmt.Sprintf("nothing on its screen (%d bytes read)", n)
+		if n == 0 {
+			if w := s.undrawn(); w != "" {
+				why += "; " + w
+			}
+		}
+		return why
 	}
 	if len(p) > 600 {
 		p = p[len(p)-600:]
@@ -647,7 +654,7 @@ func (s *shim) ready() error {
 		case <-s.changed:
 		case <-time.After(200 * time.Millisecond):
 		case <-s.exited:
-			return fmt.Errorf("Claude Code ended before it showed its prompt (%v): %s", s.exit, s.lastScreen())
+			return fmt.Errorf(EndedEarly+" (%v): %s", s.exit, s.lastScreen())
 		case <-deadline:
 			if prompted {
 				return fmt.Errorf("Claude Code showed its prompt, but hadn't listed the tools of magpie's tool server in %s", readyWait)
@@ -764,9 +771,11 @@ var (
 // command runs /usage, which Claude Code answers itself, asking no model:
 // it is typed, and what Claude Code shows for it is told as the result -p's
 // /usage gives (usageText), its local_command named. The panel is closed
-// after. It is the one command a line {"type":"command"} runs: the plan's
-// allowance read in the interactive mode, where -p's /usage tells no
-// window of it (Claude Code 2.1.316).
+// after. It is the one command a line {"type":"command"} runs. magpie's
+// own /usage reads no longer send it (#5582): the interactive Claude Code
+// (2.1.316) sends a counted model request as it starts, which opened an
+// idle account's five-hour window, so the gateway reads /usage through -p,
+// which prints the plan's windows for a subscription's sign-in.
 func (s *shim) command(name string) error {
 	s.doing.Store("hadn't drawn " + name + "'s panel")
 	if name != "/usage" {
