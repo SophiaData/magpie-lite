@@ -90,7 +90,8 @@ release-darwin:
 	@ln -s /Applications dist/magpie-mnt/Applications
 	@cp build/darwin/magpie.icns dist/magpie-mnt/.VolumeIcon.icns
 	@SetFile -c icnC -a C dist/magpie-mnt || echo "  (no SetFile: the dmg keeps the plain disk icon)"
-	@hdiutil detach dist/magpie-mnt
+	@sync
+	@for i in 1 2 3 4 5; do hdiutil detach dist/magpie-mnt 2>/dev/null && exit 0; sleep 2; done; hdiutil detach -force dist/magpie-mnt
 	@rm -f dist/magpie-darwin-$(shell go env GOARCH).dmg
 	@hdiutil convert dist/magpie-rw.dmg -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
 	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt
