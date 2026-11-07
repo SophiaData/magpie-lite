@@ -424,11 +424,25 @@ func relistPicks(q *Provider, now map[string]bool) bool {
 }
 
 // fetch is Fetch without the picks looked after. A Remote magpie's list
-// also tells whether it is this magpie (noteSelf).
+// also tells whether it is this magpie (noteSelf), and that magpie is
+// asked whether it serves its MCP router (noteRemoteHub).
 func (p Provider) fetch(ctx context.Context) ([]catalog.Model, error) {
 	ms, err := p.fetchList(ctx)
+	if err != nil && p.IsRemoteMagpie() {
+		// one that took another address on its network is asked there
+		// (remote_moved.go)
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), seekFor)
+		defer cancel()
+		if q, ok := SeekMoved(sctx, p, err); ok {
+			p, ctx = q, sctx
+			ms, err = p.fetchList(ctx)
+		}
+	}
 	if err == nil {
 		noteSelf(p, ms)
+		if len(ms) > 0 {
+			noteRemoteHub(ctx, p)
+		}
 	}
 	return ms, err
 }
@@ -2009,8 +2023,11 @@ func userPrice(s settings.Settings, p Provider, model string) (catalog.Price, bo
 	for _, key := range [...]string{p.ID + "/" + model, p.ID + "/*", AnyPriceKey(model)} {
 		if m, ok := s.ModelPrices[key]; ok {
 			if pr, bad := m.Price(); bad == "" {
-				// a Claude model's 1-hour cache write left out: 2× input
-				catalog.OneHourFor(model, &pr)
+				// a Claude model's 1-hour cache write left out: 2× input,
+				// but where Copilot bills it at the 5-minute price
+				if !p.cacheWritesAlike() {
+					catalog.OneHourFor(model, &pr)
+				}
 				return pr, true
 			}
 		}
@@ -2680,13 +2697,20 @@ func tariffOf(s settings.Settings, p Provider, known bool, model string) (catalo
 		if p.codexReviewFree(model) { // signed out since: still a ChatGPT sign-in's
 			return catalog.Price{}, true
 		}
-		if pr, ok := MakerPrice(model); ok {
+		pr, ok := MakerPrice(model)
+		if ok {
 			if k := p.PeakOf(model); k != "" {
 				pr.Peak = k
 			}
-			return pr, true
+		} else {
+			pr, ok = SamePriceIn(s, id, model)
 		}
-		return SamePriceIn(s, id, model)
+		// a call Copilot served before it was signed out is billed as
+		// Copilot bills it still
+		if ok && p.cacheWritesAlike() {
+			pr = withoutOneHour(pr)
+		}
+		return pr, ok
 	}
 	pr, ok := p.ListPrice(model)
 	if !ok {
@@ -2703,7 +2727,32 @@ func tariffOf(s settings.Settings, p Provider, known bool, model string) (catalo
 	if ok && p.PriceRate > 0 {
 		pr = pr.Times(p.PriceRate)
 	}
+	if ok && p.cacheWritesAlike() {
+		pr = withoutOneHour(pr)
+	}
 	return pr, ok
+}
+
+// cacheWritesAlike reports whether p bills a cache write at one price however
+// long it is kept. Copilot does: its copilot_usage counts a 1-hour write as
+// the cache_write a 5-minute one is, at the same price (#3435:
+// claude-opus-5.5's 15,671-token 1-hour write cost 7,844,300,000 nano-AIU,
+// $5 per million, where Anthropic's 2× input would be $8).
+func (p Provider) cacheWritesAlike() bool { return p.ID == "copilot" }
+
+// withoutOneHour is a price with no 1-hour cache write of its own, so an
+// hour's write is billed as a 5-minute one (catalog.Price.OneHour): the 2×
+// input catalog.OneHourFor gave a Claude model's list price is Anthropic's,
+// not every vendor's. The tiers are copied, as they may be the catalog's.
+func withoutOneHour(pr catalog.Price) catalog.Price {
+	pr.CacheWrite1h = 0
+	if len(pr.Tiers) > 0 {
+		pr.Tiers = slices.Clone(pr.Tiers)
+		for i := range pr.Tiers {
+			pr.Tiers[i].CacheWrite1h = 0
+		}
+	}
+	return pr
 }
 
 // EntryPriceIn is what a call to an entry of the catalog costs the user,
@@ -2978,6 +3027,10 @@ type Entry struct {
 	// told it whole rather than magpie's default working window
 	// (CompactFor, #1809).
 	WindowSet bool `json:"-"`
+	// MaxContext is the most a prompt may hold when asked for, above
+	// Context, as the provider's list says it (catalog.Model's: a Codex
+	// entry's max_context_window, which Codex is handed and may work to)
+	MaxContext int `json:"-"`
 	// Output is the most tokens a reply may hold, when known (a group's:
 	// the least of its members')
 	Output int `json:"output,omitempty"`
@@ -3270,7 +3323,7 @@ func entryFor(p Provider, m catalog.Model, s settings.Settings) Entry {
 	// an agent's list showed the whole magpie/<provider>/<model> (#955)
 	name := cmp.Or(m.Name, m.ID)
 	e := Entry{ID: p.ID + "/" + m.ID, Model: m.ID, Family: p.Family, Name: name, Efforts: effortsOf(m), Provider: p,
-		Images: images, ImageInput: imageInput, Context: ctx, WindowSet: p.ContextOf(m.ID) > 0, Output: output, OutputSet: outputOf(s, p.ID, m.ID) > 0, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Tiers: m.Tiers, Released: m.Released,
+		Images: images, ImageInput: imageInput, Context: ctx, WindowSet: p.ContextOf(m.ID) > 0, MaxContext: m.MaxContext, Output: output, OutputSet: outputOf(s, p.ID, m.ID) > 0, Free: m.Free, Rate: m.Rate, RateWas: m.RateWas, Tiers: m.Tiers, Released: m.Released,
 		Inputs: m.InputModalities, Outputs: m.OutputModalities, Codex: m.Codex,
 		AlwaysThinks: m.AlwaysThinks, DynamicTools: m.DynamicTools, DefaultEffort: m.DefaultEffort}
 	if lv, ok := catalog.CodexLevels(m.Codex); ok {

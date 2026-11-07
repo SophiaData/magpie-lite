@@ -341,8 +341,12 @@ var (
 	// answers a GLM Coding Plan's key at the pay-as-you-go endpoint (1113
 	// "余额不足或无可用资源包，请充值") — out of credit, not a rate limit;
 	// WorkBuddy's 429 14018 "Credits exhausted. Please visit the link
-	// below to purchase add-on packs…" too (Creat.wu on Discord)
-	brokeWords = regexp.MustCompile(`(?i)insufficient.?(balance|credit|fund)|\bcredits? (are )?exhausted\b|余额不足|欠费|请充值`)
+	// below to purchase add-on packs…" too (Creat.wu on Discord), and
+	// OpenAI's 429 credit_balance_exhausted for an organization whose
+	// prepaid API credits are spent: its underscores kept "credits
+	// exhausted" from matching, so it read as a rate limit and the same
+	// key was asked again rather than the next account
+	brokeWords = regexp.MustCompile(`(?i)insufficient.?(balance|credit|fund)|\bcredits? (are )?exhausted\b|credit.?balance.?exhausted|余额不足|欠费|请充值`)
 	// quotaWords: it has used up what its plan allows for now. The budget's
 	// words needn't sit beside each other: LiteLLM's spent key answers 429
 	// "Budget has been exceeded! Key=… (sk-…), Current cost: …, Max budget:
@@ -1037,6 +1041,33 @@ func verifyHeld(c candidate) (string, bool) {
 	return r.said, true
 }
 
+// restrictedHeld is the refusal to give again, without asking, and its
+// status, for a candidate resting as one its vendor restricted
+// (failRestricted), while it rests: whole, or its model alone where that
+// is how it rests (a Remote magpie's model). Left the last one, it was
+// asked by every request all the same, as restLast and probeOne keep one
+// resting member for a request to get a real answer, and refused by every
+// one (leowang on Discord: two Antigravity accounts Google had suspended,
+// 23 and 22 tries, none answered, while the rest was meant to cost one
+// refused request each per restrictedRest). The refusal is the answer:
+// no wait mends it, and the vendor's risk control counts each request
+// against the account. Its rest ending, or lifted on the Routing page,
+// it is asked again.
+func restrictedHeld(c candidate) (int, string, bool) {
+	r, ok := restOf(c.restKey())
+	if !ok && c.restID() != c.restKey() {
+		r, ok = restOf(c.restID())
+	}
+	if !ok || r.Why != failRestricted || r.said == "" {
+		return 0, "", false
+	}
+	status := r.Status
+	if status < 400 {
+		status = http.StatusForbidden
+	}
+	return status, r.said, true
+}
+
 // resetsIn is how long until a used-up ChatGPT account is back, as its
 // refusal says: {"error":{"type":"usage_limit_reached","resets_at":<unix>,
 // "resets_in_seconds":<n>}}. Zero when it doesn't say.
@@ -1351,6 +1382,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// request is asked again, and no rest and no failure counted (#2873)
 		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
+	if c.p.PassesErrors() {
+		// the user leaves its errors to the client (errors=pass): none of
+		// its keys is set aside for one, and the next request is asked
+		// as this one was
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
 	if header.Get(zdrHeader) != "" || zdrRefused(status, body) {
 		// Command Code's Zero Data Retention setting refused the request:
 		// the model and the account are as good as they were, and answer
@@ -1420,6 +1457,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	guessed := false
 	// a failure counted past the account's, for its model alone (below)
 	modelBackoff := false
+	// a failure rested by a full window that counts some models only
+	// (below): that model is out, not the account
+	windowModel := false
 	if why == failProxy {
 		// the account is as good as it was; the proxy is the user's to start
 		return r
@@ -1541,8 +1581,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			}
 		}
 	case failRestricted:
-		// out until the vendor lifts it: an appeal, not a wait (#1849)
+		// out until the vendor lifts it: an appeal, not a wait (#1849).
+		// Its words, for restrictedHeld to give again while it rests
 		d, r.By = restrictedRest, "restricted"
+		r.said = provider.APIError(body, http.StatusText(status))
 	case failVerify:
 		d, r.By = verifyRest, "verify"
 		// the error as the agent was given it, and the link in it
@@ -1626,6 +1668,15 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// until its window reset (plugins#243, zygs1083-dotcom)
 		if t := c.full(now); !t.IsZero() && c.p.Account != nil && !unserved && status != http.StatusUnauthorized && status != http.StatusForbidden {
 			d, r.By, modelBackoff = min(t.Sub(now), longestQuota), "window", false
+			// and when every full window that counts the model counts
+			// some models only (Pooled), the model rests, not the
+			// account: its other models are still in theirs
+			// (plugins#817, zane668: ZCode's GLM-5.3 bucket spent, its
+			// "exceed quota limit" read as a reply that did not stream,
+			// rested the account a day, GLM-5.3-Flash's own bucket with
+			// 71% left with it). A window of the whole account full
+			// rests the account, as before
+			windowModel = c.pooled(now)
 		}
 	}
 	// an account is kept by the agent its usage is asked of: a plugin's
@@ -1658,7 +1709,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// a refusal that names its reset and points to the account's other
 	// models is the model's limit: the others still answer (WorkBuddy's
 	// "您也可以切换其他模型继续使用", #1669)
-	if pooled || unserved || modelBackoff || overloaded || why == failQuota && resetsWhen.Match(wordsOf(body)) && otherModels.Match(wordsOf(body)) {
+	if pooled || unserved || modelBackoff || windowModel || overloaded || why == failQuota && resetsWhen.Match(wordsOf(body)) && otherModels.Match(wordsOf(body)) {
 		id = c.restID()
 	}
 	// Cline's daily limit of one free model is that model's: its others,
@@ -2334,7 +2385,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
 			Used: l.used, WeekLow: l.weekLow, Soon: l.soon, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits, First: l.first,
-			Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c)}
+			Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c), Lead: c.p.UseFirst}
 	}
 	routed.Unlock()
 	if st.ByUse {
