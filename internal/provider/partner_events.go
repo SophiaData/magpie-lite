@@ -119,8 +119,12 @@ func CountPartner(what string, ids ...string) {
 	}
 }
 
-// PartnerCounts are the counts of the days before today, to be sent.
+// PartnerCounts are the counts of the days before today, to be sent. This
+// build lists no partners, so there is nothing to send.
 func PartnerCounts(now time.Time) []PartnerCount {
+	if partnersSource() == "off" {
+		return nil
+	}
 	partnerCountMu.Lock()
 	defer partnerCountMu.Unlock()
 	c := readPartnerCounts()
