@@ -1513,8 +1513,8 @@ function sheet(box, open, done) {
   const none = { height: "0px", paddingTop: "0px", paddingBottom: "0px", marginTop: "0px", marginBottom: "0px", borderTopWidth: "0px", opacity: 0 };
   const ease = "cubic-bezier(.32, .72, 0, 1)";
   box.style.overflow = "hidden";
-  const run = box.animate(open ? [none, full] : [full, none], { duration: open ? 460 : 340, easing: ease, fill: open ? "none" : "forwards" });
-  for (const c of box.children) c.animate(open ? [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }] : [{ opacity: 1 }, { opacity: 0 }], { duration: open ? 420 : 200, delay: open ? 60 : 0, easing: open ? ease : "ease-out", fill: "backwards" });
+  const run = box.animate(open ? [none, full] : [full, none], { duration: open ? 320 : 220, easing: ease, fill: open ? "none" : "forwards" });
+  for (const c of box.children) c.animate(open ? [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }] : [{ opacity: 1 }, { opacity: 0 }], { duration: open ? 280 : 150, delay: open ? 40 : 0, easing: open ? ease : "ease-out", fill: "backwards" });
   run.onfinish = () => { if (open) box.style.overflow = ""; done?.(); };
   run.oncancel = run.onfinish;
 }
@@ -4221,14 +4221,14 @@ const levelUnset = (a) => ompAgent(a) ? t("the session's thinking level") : t("t
 // The tray panel has no scrollbars to speak of, so it grows to fit instead.
 // The agents' scroll unrolls and rolls up on these, in app.css as in the
 // panel's own height.
-const UNROLL = { ms: 620, ease: ".22,1,.36,1" };
+const UNROLL = { ms: 340, ease: ".23,1,.32,1" };
 // A row opens and closes on a critically damped spring, as iOS moves things:
 // it sets off gently, not at a jump, and settles without a long tail. The
 // curve is that spring fitted to a cubic-bezier, which the panel's edge can
 // take too; app.css has the same (--row-spring).
-const ROW_OPEN = { ms: 480, ease: ".25,.3,.1,1" };
-const ROW_CLOSE = { ms: 400, ease: ".25,.3,.1,1" };
-const ROLLUP = { ms: 420, ease: ".4,0,.2,1" };
+const ROW_OPEN = { ms: 320, ease: ".25,.3,.1,1" };
+const ROW_CLOSE = { ms: 260, ease: ".25,.3,.1,1" };
+const ROLLUP = { ms: 260, ease: ".23,1,.32,1" };
 
 // tintPanel hands the colour the panel's page shows to the system, to paint
 // under the page, which then leaves its own background clear: the page is
@@ -4547,7 +4547,7 @@ async function renderUpdateBadge() {
   b.onclick = () => {
     // what changed is shown first, and a click there restarts (#844); one
     // that failed restarts again at once
-    if (u.state === "ready") return u.error ? restart() : confirmUpdate(u, restart);
+    if (u.state === "ready") return u.error ? restart() : confirmUpdate(u, restart, b);
     // found (#2296) or failed: a click downloads it, and restarts once it's in
     if (u.state === "error" || u.state === "found") {
       b.dataset.pulling = "1";
@@ -4705,10 +4705,11 @@ async function openWhatsNew(b, last = "") {
 // whatsnew.js, loaded when one opens; the tray's panel restarts as before.
 const notesJS = () => import("./whatsnew.js");
 const showWhatsNew = (...a) => notesJS().then(() => window.wnShow(...a));
-async function confirmUpdate(u, go) {
+async function confirmUpdate(u, go, b) {
   if (mode === "panel" || !$("#modal").hidden) return go();
-  try { await notesJS(); } catch { return go(); }
-  return window.wnConfirm(u, go);
+  b?.classList.add("busy");
+  try { await notesJS(); } catch { b?.classList.remove("busy"); return go(); }
+  return window.wnConfirm(u, go, b);
 }
 
 // ---------- picker ----------
@@ -7952,7 +7953,7 @@ document.addEventListener("click", (e) => {
   d.open = true;
   d.classList.toggle("closing", closing);
   inner.style.overflow = "hidden";
-  const shape = closing ? { duration: 420, easing: IOS_EASE } : { duration: 570, easing: SPRING };
+  const shape = closing ? { duration: 280, easing: IOS_EASE } : { duration: 460, easing: SPRING };
   const pad = getComputedStyle(inner).paddingTop;
   const grow = inner.animate([
     { height: from + "px", paddingTop: from ? pad : "0px" },
@@ -7969,7 +7970,7 @@ document.addEventListener("click", (e) => {
     for (const row of inner.children) {
       if (row.style.display === "none" || row.hidden) continue;
       anims.push(row.animate([{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }],
-        { duration: 420, delay: 40 + Math.min(i++, 12) * 16, easing: IOS_EASE, fill: "backwards" }));
+        { duration: 300, delay: 30 + Math.min(i++, 12) * 14, easing: IOS_EASE, fill: "backwards" }));
     }
   }
   const move = { anims, closing };
@@ -7989,7 +7990,7 @@ function advancedSet(d, p) {
     !!d.proxyMode || Object.values(d.accountProxies || {}).some((x) => x?.mode) ||
     [d.concurrency, d.maxAccounts, d.queueLimit, d.queueWait, d.maxRPM, d.priceRate, d.contexts, d.outputs, d.compacts].some((v) => String(v ?? "").trim()) ||
     !!d.rateWindows?.length ||
-    !!(d.searches || d.authHeader || d.passUserAgent || d.unredacted || d.countFree || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff || d.http1 || d.imageFilesOff || d.passErrors) ||
+    !!(d.searches || d.authHeader || d.passUserAgent === false || d.unredacted || d.countFree || d.pinUpstream || d.nativeCompaction || d.balanceToken || d.limitRestOff || d.http1 || d.imageFilesOff || d.passErrors) ||
     !!d.fallback?.length || !!p?.balanceToken?.set;
 }
 function priceRateError(ed) {
@@ -8563,7 +8564,7 @@ function iconPicker(ed) {
 // spring, and closing folds it back into that (still there, re-rendered or
 // not); with nothing pressed it rises from a little below.
 const SPRING = CSS.supports?.("animation-timing-function", "linear(0, 1)")
-  // a damped spring (response .42 s, damping .8): 1.5% over, settled at 570 ms
+  // a damped spring (damping .8): 1.5% over, settled by the end of the duration it runs for (460 ms)
   ? "linear(0, 0.0203, 0.0723, 0.1448, 0.2292, 0.3188, 0.4086, 0.4951, 0.576, 0.6498, 0.7157, 0.7735, 0.8232, 0.8654, 0.9005, 0.9293, 0.9525, 0.9708, 0.9849, 0.9956, 1.0033, 1.0087, 1.0122, 1.0142, 1.015, 1.0151, 1.0146, 1.0136, 1.0124, 1.0111, 1.0097, 1.0084, 1.0071, 1.0059, 1.0049, 1.0039, 1.0031, 1.0024, 1.0018, 1.0013, 1)"
   : "cubic-bezier(.2, .9, .25, 1.02)";
 const IOS_EASE = "cubic-bezier(.32, .72, 0, 1)";
@@ -8688,7 +8689,7 @@ async function skelBird() {
   } finally {
     release();
     // nothing left to stand on: it flies off, up and away
-    if (quiet) await b.animate([{ opacity: 1 }, { opacity: 0, transform: b.style.transform + " scale(.6)" }], { duration: 160, easing: "ease-in", fill: "forwards" }).finished;
+    if (quiet) await b.animate([{ opacity: 1 }, { opacity: 0, transform: b.style.transform + " scale(.6)" }], { duration: 150, easing: "cubic-bezier(.23, 1, .32, 1)", fill: "forwards" }).finished;
     b.dataset.flap = "";
     const from = { x, y };
     if (!quiet) await tween(480, (e) => put({ x: from.x + (innerWidth + 60 - from.x) * e, y: from.y - (from.y + 80) * e, f: 1, r: -14, sx: 1, sy: 1 }), easeIn);
@@ -8959,7 +8960,7 @@ function openModal(content, quiet) {
   m.animate([{ ...VEIL_OFF, offset: 0 }], { duration: 280, easing: "ease-out" });
   if (calm()) { d.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160 }); return; }
   const to = d.getBoundingClientRect(), from = originRect(modalOrigin);
-  const grow = d.animate(from ? [morphFrom(from, to), { transform: "none", clipPath: MORPH_REST }] : [{ transform: "translateY(24px) scale(.94)" }, { transform: "none" }], { duration: 570, easing: SPRING });
+  const grow = d.animate(from ? [morphFrom(from, to), { transform: "none", clipPath: MORPH_REST }] : [{ transform: "translateY(24px) scale(.94)" }, { transform: "none" }], { duration: 440, easing: SPRING });
   d.animate([{ opacity: 0 }, { opacity: 1 }], { duration: from ? 140 : 240, easing: "ease-out" });
   if (!from) return;
   // an editor can settle its size after it was measured (a provider's grew
@@ -9008,7 +9009,7 @@ function closeModal() {
   const to = d.getBoundingClientRect(), from = calm() ? null : originRect(modalOrigin);
   d.style.transform = was;
   const clip = d.style.clipPath || MORPH_REST;
-  const shape = { duration: from ? 380 : 260, easing: IOS_EASE, fill: "forwards" };
+  const shape = { duration: from ? 300 : 200, easing: IOS_EASE, fill: "forwards" };
   const moves = [
     m.animate([VEIL_OFF], { ...shape, easing: "ease-out" }),
     calm() ? d.animate([{ opacity: 0 }], { duration: 140, fill: "forwards" })
@@ -9182,7 +9183,7 @@ function baseAPIOf(p) {
 
 // draftOf is a saved provider as its editor's form holds it.
 function draftOf(p) {
-  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, insecureTLS: !!p.insecureTLS, http1: !!p.http1, limitRestOff: !!p.limitRestOff, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: !!p.passUserAgent, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
+  return { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, gemini: p.gemini || "", catalog: p.catalog, decide: p.decide || "", key: "", api: baseAPIOf(p), chosen: pickedOf(p), none: !!p.noModels, best: !!p.bestInFamily, extra: [], headers: headerRows(p.headers), extraBody: extraBodyText(p.extraBody), replyHeaders: (p.replyHeaders || []).join(", "), passHeaders: (p.passHeaders || []).join(", "), icon: p.icon || "", iconFrom: p.iconFrom || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, hiddenDrawers: [...(p.hiddenDrawers || [])], hiddenVideomakers: [...(p.hiddenVideomakers || [])], searches: !!p.searches, unredacted: !!p.unredacted, countFree: !!p.countFree, insecureTLS: !!p.insecureTLS, http1: !!p.http1, limitRestOff: !!p.limitRestOff, passErrors: !!p.passErrors, imageFilesOff: !!p.imageFilesOff, nativeCompaction: !!p.nativeCompaction, passUserAgent: p.passUserAgent !== false, pinUpstream: !!p.pinUpstream, authHeader: p.authHeader || "", balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", balanceMethod: p.balanceMethod || "", modelsURL: p.modelsURL || "", contexts: contextsText(p.contexts), outputs: contextsText(p.outputs), compacts: contextsText(p.compacts), keysUrl: p.keysUrl || "", ...proxyDraft(p), ...concurrencyDraft(p), rateWindows: (p.rateWindows || []).map((w) => ({ ...w })) };
 }
 
 // duplicateProvider opens the Add form on a copy of p, its key p's unless another is pasted (#268).
@@ -9426,12 +9427,13 @@ function drawEditor(p, presetID) {
     ed.append(...field("Base URL", urlWrap));
   }
 
-  // Cline's DeepSeek and GLM models pinned to their makers' APIs (sdytman, ARNO on Discord)
+  // Cline's DeepSeek and GLM models pinned to their makers' APIs (sdytman, ARNO on Discord);
+  // since 11-06 Cline refuses the pin for all but glm-5.3-flash (#5442), as the note says
   const upstreamField = () => {
     const [ptk, pcb] = tick(t("DeepSeek and GLM models only from their makers' own APIs"), !!draft.pinUpstream);
     ptk.classList.add("pin-upstream");
     pcb.onchange = () => { draft.pinUpstream = pcb.checked; };
-    return field(t("Upstream"), ptk, t("Cline serves a model from any host its gateway picks; pinned, a request for a DeepSeek model goes only to DeepSeek and one for a GLM model only to Z.ai, which keeps its prompt cache, and fails when that API can't take it"));
+    return field(t("Upstream"), ptk, t("Since 2026-11-06 Cline refuses a pinned DeepSeek or GLM request with 403, so magpie sends them unpinned and Cline picks the host; only glm-5.3-flash still asks Z.ai"));
   };
 
   // the settings few need, under Advanced: open when one is set, or as left here
@@ -9765,9 +9767,9 @@ function drawEditor(p, presetID) {
   // the agent's User-Agent (#1851); an account or ownClient keeps its own
   const uaPassable = () => !p?.account && !(p ? p.ownClient : pr?.ownClient);
   if (uaPassable()) {
-    const [utk, ucb] = tick(t("Send the agent's own User-Agent"), !!draft.passUserAgent);
+    const [utk, ucb] = tick(t("Send the agent's own User-Agent"), draft.passUserAgent !== false);
     ucb.onchange = () => { draft.passUserAgent = ucb.checked; };
-    advIn.append(...field(t("User-Agent"), utk, t("For a plan that serves only the coding agents it names: each request goes with the User-Agent the agent sent (pi, OpenCode, Claude Code…), not magpie's. Requests magpie makes itself, and ones the agent sent without one, still go as magpie. A User-Agent set in Headers above always wins.")));
+    advIn.append(...field(t("User-Agent"), utk, t("Off, every request goes as magpie. A User-Agent set in Headers above always wins.")));
   }
 
   const addressOf = (k) => (draft[k] ?? (isNew && pr ? pr[k] : "")) || "";
@@ -10165,7 +10167,7 @@ function drawEditor(p, presetID) {
     if (p?.takesImageFiles) body.imageFilesOff = !!draft.imageFilesOff;
     if (p ? p.takesPassErrors : custom) body.passErrors = !!draft.passErrors;
     if (!decideOnly(p || pr)) body.nativeCompaction = !!draft.nativeCompaction && carriesCompaction();
-    body.passUserAgent = !!draft.passUserAgent && uaPassable();
+    if (uaPassable()) body.passUserAgent = draft.passUserAgent !== false;
     const cx = parseContexts(draft.contexts || "");
     if (cx.error) return contextError(ed, cx.error);
     body.contexts = cx.map;
@@ -11140,6 +11142,8 @@ const servedIds = (p) => draft.chosen.length ? draft.chosen : draft.none || draf
 
 // modelsOpen: models let out to full height (#833). MCHIPS_MAX: .mchips' max-height
 let modelsOpen = false;
+// whether a provider's chips were last tall enough to fold, by its id
+const foldNeeded = {};
 // unpickedShown: the editor showing unpicked models under Picked only (yyddbds)
 let unpickedShown = null;
 // picksLeft: picks set aside, given back when Picked only is clicked again (yyddbds)
@@ -11297,13 +11301,19 @@ function renderModels(p) {
     fold.setAttribute("aria-expanded", modelsOpen);
     foldLabel.textContent = t(modelsOpen ? "Collapse the list" : "Expand the list");
     fold.title = t(modelsOpen ? "Hold the models to a few lines again" : "Show every model at once, not in a small box to scroll");
-    // laid out first: the editor is put on the page after it is drawn.
     // Held, the box is MCHIPS_LINES tall (app.css .mchips); open, it is as
     // tall as its chips, which must be more than that to fold
-    requestAnimationFrame(() => {
+    const measure = () => {
+      if (!chips.isConnected) return;
       const most = Math.min(MCHIPS_MAX, innerHeight * 0.4);
-      fold.hidden = !(chips.scrollHeight > (modelsOpen ? most : chips.clientHeight) + 1);
-    });
+      fold.hidden = !(foldNeeded[p.id] = chips.scrollHeight > (modelsOpen ? most : chips.clientHeight) + 1);
+    };
+    // put on the page in this same task: measured there, till then as the
+    // last one was, or a redraw (Fetch models again, indexyz) showed the
+    // fold a frame and the dialog, holding the press, moved by it
+    fold.hidden = !foldNeeded[p.id];
+    if (chips.isConnected) measure();
+    else queueMicrotask(() => chips.isConnected ? measure() : requestAnimationFrame(measure));
   };
   const draw = () => {
     if (agentMenu && chips.contains(agentMenu.anchor)) closeAgentMenu();
@@ -15661,7 +15671,7 @@ function unrollSheet(view, sheet, e) {
   ], { duration: ROW_OPEN.ms + 60, easing: `cubic-bezier(${ROW_OPEN.ease})` });
   for (const c of sheet.children) {
     c.animate([{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }],
-      { duration: 340, delay: 60, easing: "cubic-bezier(.22, 1, .36, 1)", fill: "backwards" });
+      { duration: 260, delay: 40, easing: "cubic-bezier(.23, 1, .32, 1)", fill: "backwards" });
   }
   // what the view is at once the sheet starts at no height: a page that
   // was scrolled to its end is clamped shorter (WebKit), not moved by the reader
@@ -19828,7 +19838,7 @@ function renderCLI(r) {
 // Settings' Download source (#893): where an update's file is downloaded
 // from — GitHub, or a GitHub download mirror put before its URL, the same
 // setting `magpie update mirror` writes. magpie names no mirror of its
-// own; the feed and each file's SHA-256 still come from the release's own
+// own; the feed and each file's SHA-256 still come from usemagpie.ai, and a
 // file that doesn't match is never installed. A draft and its error are
 // kept across the page being drawn again.
 let mirrorEditing = false, mirrorDraft = "", mirrorErr = "";
@@ -19844,10 +19854,10 @@ function renderUpdateMirror(r, s) {
   const sub = el("div", "sub");
   who.append(sub);
   const m = s.updateMirror || "";
-  sub.textContent = mirrorErr || (m ? t("Updates are downloaded through this mirror, each checked against the release's own checksum")
+  sub.textContent = mirrorErr || (m ? t("Updates are downloaded through this mirror, each checked against usemagpie.ai's checksum")
     : t("Updates are downloaded from GitHub; a mirror can be used where GitHub is slow"));
   sub.classList.toggle("err", !!mirrorErr);
-  sub.title = t("The update and its checksum always come from this release's repository; a file from the mirror that doesn't match it is not installed.");
+  sub.title = t("The update and its checksum always come from usemagpie.ai; a file from the mirror that doesn't match it is not installed.");
   if (!mirrorEditing) {
     if (m) {
       const official = el("button", "text", t("Use GitHub"));
@@ -20602,12 +20612,9 @@ function renderTrayUsage(s, keep) {
     pill.classList.remove("busy");
     paint();
     if (!pill.isConnected) return;
-    // the Usage page's cards (keyCards): a key's plan and its balance are
-    // one, not two rows of one name ticked together (#1658, MizuIro-H). A
-    // balance left a card of its own (a stale stand-in) whose id another
-    // row has already is left out: the menu bar shows the first card of an
-    // id, so its row could only tick the other.
-    const cards = keyCards((quotas || []).filter((q) => !q.error && (q.windows?.length || q.balance)))
+    // the Usage page's cards (keyCards, #1658), one row an id; not one
+    // whose windows are all text, with no figure to draw (LuckymanJC)
+    const cards = keyCards((quotas || []).filter((q) => !q.error && (q.windows?.some((w) => !w.text) || q.balance)))
       .filter((q, i, all) => all.findIndex((c) => trayCardID(c) === trayCardID(q)) === i);
     const opts = [{ v: "", name: "Off", note: "" }];
     for (const q of cards) {
@@ -20620,9 +20627,11 @@ function renderTrayUsage(s, keep) {
     // magpie's own count of every agent's requests, as the Usage page's
     // Overview has it: tokens over cost (#1984)
     for (const [v, name] of TRAY_TOTALS) opts.push({ v, name, note: "Every agent's, as the Usage page counts them" });
-    // one ticked that isn't there now (signed out, or not answering) stays
-    // to be unticked
-    for (const id of ids) if (!opts.some((o) => o.v === id)) opts.push({ v: id, name: id.split("|")[0], note: id.endsWith(IN_USE) ? "Account in use" : id.split("|")[1] || "" });
+    // one ticked that isn't there now stays to be unticked
+    for (const id of ids) if (!opts.some((o) => o.v === id)) {
+      const q = (quotas || []).find((q) => trayCardID(q) === id || q.provider + IN_USE === id);
+      opts.push({ v: id, name: q?.name || id.split("|")[0], note: id.endsWith(IN_USE) ? "Account in use" : id.split("|")[1] || "" });
+    }
     if (!cards.length) opts.push({ v: "\x00", name: "No subscriptions yet", note: "Sign in to one, or add a plan's key, and it shows on the Usage page" });
     openProtoMenu(pill, opts, ids, (trayUsages) => savePrefs({ ...keep, trayUsages }), "Shown beside the icon");
   };
@@ -22447,7 +22456,7 @@ async function renderUpdate(r, u) {
       if (u.gaveUp) sub.textContent += " · " + t("the gateway stayed busy for an hour, so magpie didn't restart; it updates when you restart or quit it");
       else if (busyNow) sub.textContent += " · " + busyNow;
       if (u.gaveUp) sub.classList.add("wraps");
-      btn(t("Restart to update"), () => (u.error ? install() : confirmUpdate(u, () => install())));
+      btn(t("Restart to update"), (e) => (u.error ? install() : confirmUpdate(u, () => install(), e.currentTarget)));
       if (u.error && u.url) btn(t("Download"), open);
       break;
     }
@@ -23925,12 +23934,12 @@ function navSubEnter(box) {
   const cs = getComputedStyle(box);
   const to = { height: box.offsetHeight + "px", marginTop: cs.marginTop, marginBottom: cs.marginBottom, opacity: 1 };
   box.classList.add("moving");
-  box.animate([{ height: "0px", marginTop: "0px", marginBottom: "0px", opacity: 0 }, to], { duration: 460, easing: NAV_EASE })
+  box.animate([{ height: "0px", marginTop: "0px", marginBottom: "0px", opacity: 0 }, to], { duration: 300, easing: NAV_EASE })
     .finished.then(() => box.classList.remove("moving"), () => {});
   [...box.querySelectorAll(".nav-s")].forEach((s, i) => s.animate(
     [{ opacity: 0, transform: "translateY(-6px)" }, { opacity: 1, transform: "none" }],
-    { duration: 380, delay: 60 + i * 28, easing: NAV_EASE, fill: "backwards" }));
-  box.querySelector(".nav-hl").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: 120, fill: "backwards" });
+    { duration: 260, delay: 40 + Math.min(i, 12) * 20, easing: NAV_EASE, fill: "backwards" }));
+  box.querySelector(".nav-hl").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200, delay: 80, fill: "backwards" });
 }
 // a folding list is out of the way at once: not a tab, not reachable, not
 // found by what looks for the sidebar's rows
@@ -23943,7 +23952,7 @@ function navSubLeave(box) {
   const cs = getComputedStyle(box);
   box.classList.add("moving");
   box.animate([{ height: box.offsetHeight + "px", marginTop: cs.marginTop, marginBottom: cs.marginBottom, opacity: 1 },
-    { height: "0px", marginTop: "0px", marginBottom: "0px", opacity: 0 }], { duration: 380, easing: NAV_EASE, fill: "forwards" })
+    { height: "0px", marginTop: "0px", marginBottom: "0px", opacity: 0 }], { duration: 240, easing: NAV_EASE, fill: "forwards" })
     .finished.then(() => box.remove(), () => box.remove());
 }
 // the header beside the sidebar: the group, the page, and its tab

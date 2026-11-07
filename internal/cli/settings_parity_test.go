@@ -165,8 +165,6 @@ var cliForRoute = map[string]string{
 }
 
 var notYet = map[string]string{
-	"GET /api/quit":                              W,  // api.go: the window's own; a terminal ends magpie with a signal
-	"POST /api/usage/checkin-account":            W,  // api.go: the window's own, added with upstream v0.1.2670
 	"POST /api/agent-fast":                       A,  // agent_models.go
 	"POST /api/agent-models/{id}":                A,  // agent_models.go
 	"GET /api/agents/cli":                        A,  // api.go
@@ -176,6 +174,7 @@ var notYet = map[string]string{
 	"GET /api/drift":                             A,  // api.go
 	"GET /api/notices":                           W,  // api.go
 	"GET /api/omarchy":                           W,  // api.go
+	"GET /api/quit":                              W,  // api.go: the window's Quit question
 	"GET /api/state":                             W,  // api.go
 	"POST /api/agents/{action}/{id}":             A,  // api.go
 	"POST /api/agents/arrange":                   W,  // api.go
@@ -232,6 +231,7 @@ var notYet = map[string]string{
 	"POST /api/settings/redact-rules":            S2, // api.go
 	"POST /api/settings/reveal":                  W,  // api.go
 	"POST /api/settings/search-all":              S2, // api.go
+	"POST /api/settings/search-keys":             S2, // api.go
 	"POST /api/settings/search-quota":            S2, // api.go
 	"POST /api/settings/text-size":               W,  // api.go
 	"POST /api/settings/trae-checkin":            S2, // api.go
@@ -382,6 +382,7 @@ var notYet = map[string]string{
 	"GET /api/usage/quotas/history/holds":        U,  // usage.go
 	"GET /api/usage/requests":                    U,  // usage.go
 	"GET /api/usage/requests/content":            U,  // usage.go
+	"POST /api/usage/checkin-account":            U,  // usage.go: one account now; `magpie accounts checkin` does every account
 	"POST /api/usage/clear":                      U,  // usage.go
 	"POST /api/usage/codex-reset":                U,  // usage.go
 	"POST /api/usage/deleted":                    U,  // usage.go
