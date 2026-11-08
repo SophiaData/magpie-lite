@@ -166,7 +166,7 @@ const usage = `magpie — one place to pick every agent's model
   magpie update [check] [--proxy <url>] [--mirror <prefix>]
                                   install the newest release (check: only say if there is one); --proxy: an
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
-                                  before the github.com URL (none unless given; still checked against the release's own SHA-256)
+                                  before the github.com URL (none unless given; still checked against usemagpie.ai's SHA-256)
   magpie update mirror [<prefix>|off]  the mirror every update, the app's own too, is downloaded through
   magpie update channel [stable|every]  which versions updates offer: stable (one a week, an urgent one at
                                   once) or every version as it comes out (the default)
@@ -447,6 +447,9 @@ func run(args []string) error {
 	// and Cursor Private Inference's variables, which the Mac's launchd
 	// forgets at a restart, for the gateway's address now
 	gateway.WhileServing = append(gateway.WhileServing, agent.KeepCursorLocalEnv)
+	// and magpie's models in OpenMausBot's engine, which OpenMausBot
+	// writes back as it held them when an engine is changed in it
+	gateway.WhileServing = append(gateway.WhileServing, agent.KeepOpenMausBotListed)
 	// and Claude Science's daemon, which a restart of the computer ends,
 	// started on the gateway again while it is connected
 	gateway.WhileServing = append(gateway.WhileServing, agent.KeepClaudeScience)
