@@ -221,8 +221,6 @@ var cliForRoute = map[string]string{
 }
 
 var notYet = map[string]string{
-	"GET /api/quit":                              W,  // api.go: the window's own; a terminal ends magpie with a signal
-	"POST /api/usage/checkin-account":            W,  // api.go: the window's own, added with upstream v0.1.2670
 	"POST /api/agent-fast":                       A,  // agent_models.go
 	"POST /api/agent-models/{id}":                A,  // agent_models.go
 	"GET /api/agents/cli":                        A,  // api.go
@@ -232,6 +230,7 @@ var notYet = map[string]string{
 	"GET /api/drift":                             A,  // api.go
 	"GET /api/notices":                           W,  // api.go
 	"GET /api/omarchy":                           W,  // api.go
+	"GET /api/quit":                              W,  // api.go: the window's Quit question
 	"GET /api/state":                             W,  // api.go
 	"POST /api/agents/{action}/{id}":             A,  // api.go
 	"POST /api/agents/arrange":                   W,  // api.go
@@ -317,6 +316,7 @@ var notYet = map[string]string{
 	"GET /api/context":                           U,  // context.go
 	"GET /api/context/text":                      W,  // context.go
 	"GET /api/context/reply":                     W,  // context_archive.go: the reply half of the same detail view
+	"GET /api/context/session":                   W,  // context.go: a session's context, request by request, in its detail view
 	"GET /api/dev/wait":                          W,  // dev_on.go
 	"POST /api/dev/import":                       W,  // dev_on.go
 	"GET /api/fonts":                             W,  // fonts.go
@@ -341,6 +341,7 @@ var notYet = map[string]string{
 	"GET /api/library/market/servers":            L,  // library.go
 	"GET /api/library/market/skills":             L,  // library.go
 	"GET /api/library/mcp-signin/{id}":           L,  // library.go
+	"GET /api/library/pi":                        L,  // library.go
 	"GET /api/library/rtk":                       L,  // library.go
 	"GET /api/library/skill":                     L,  // library.go
 	"POST /api/library/market/about":             L,  // library.go
@@ -349,6 +350,8 @@ var notYet = map[string]string{
 	"POST /api/library/mcp-signout":              L,  // library.go
 	"POST /api/library/mcp/check":                L,  // library.go
 	"POST /api/library/mcp/config":               L,  // library.go
+	"POST /api/library/pi":                       L,  // library.go
+	"POST /api/library/pi/copy":                  L,  // library.go
 	"POST /api/library/projects/choose":          W,  // library.go
 	"POST /api/library/reveal":                   W,  // library.go
 	"POST /api/library/rtk":                      L,  // library.go
@@ -440,6 +443,7 @@ var notYet = map[string]string{
 	"GET /api/usage/quotas/history/holds":        U,  // usage.go
 	"GET /api/usage/requests":                    U,  // usage.go
 	"GET /api/usage/requests/content":            U,  // usage.go
+	"POST /api/usage/checkin-account":            U,  // usage.go: one account now; `magpie accounts checkin` does every account
 	"POST /api/usage/clear":                      U,  // usage.go
 	"POST /api/usage/codex-reset":                U,  // usage.go
 	"POST /api/usage/deleted":                    U,  // usage.go
