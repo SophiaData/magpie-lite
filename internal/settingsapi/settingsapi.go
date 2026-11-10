@@ -43,7 +43,7 @@ var Keys = []string{
 	"noStats", "noUsageStats", "otel",
 	// warm-ups and check-ins
 	"codexWarmup", "claudeWarmup", "codexWarmAt", "claudeWarmAt", "codexWarmAts", "claudeWarmAts",
-	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin",
+	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin", "checkinAt",
 	// models: replies, vision, images, search
 	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries", "retryAfterCap",
 	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "classifyTimeout",
@@ -337,6 +337,8 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.CodexAsyncCompact, in.CodexAsyncCompactPercent = cur.CodexAsyncCompact, cur.CodexAsyncCompactPercent
 	// Claude Desktop's list, set in its row on the Agents page
 	in.DesktopLongest = cur.DesktopLongest
+	// and whether it runs in a folder of its own, set there too (#5671)
+	in.DesktopIsolated = cur.DesktopIsolated
 	// and the Get started card put away, from the card itself
 	in.GuideHidden = cur.GuideHidden
 
@@ -349,6 +351,8 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	// in their Agents rows
 	in.CodexSubagentModel = cur.CodexSubagentModel
 	in.DesktopSubagentModel = cur.DesktopSubagentModel
+	// and the model DeepSeek Harness compacts on, set in its row
+	in.DshCompactModel = cur.DshCompactModel
 	// and the model for requests masking would change (redact-route)
 	in.RedactRouteTo = cur.RedactRouteTo
 	in.DesktopSubagentEffort = cur.DesktopSubagentEffort

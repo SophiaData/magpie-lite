@@ -282,7 +282,7 @@ func Videomaker() string {
 	return m
 }
 
-// VideomakerMissing is the model Settings › Images › Video generation
+// VideomakerMissing is the model Settings › Models › Images › Video generation
 // names when magpie can't make videos with it any more, so that
 // AutoVideomaker's makes them in its place, as DrawerMissing is Image
 // generation's. "" when none is named or it resolves.
@@ -1063,7 +1063,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 	if f.Model == "" {
 		m, ok := videomaker()
 		if !ok {
-			fail(400, "no model to make videos with: sign in to a Grok subscription or set up a provider that makes videos (a MiniMax API key makes them with MiniMax-H3), and leave Settings → Images → Image generation on, or name one")
+			fail(400, "no model to make videos with: sign in to a Grok subscription or set up a provider that makes videos (a MiniMax API key makes them with MiniMax-H3), and leave Settings → Models → Images → Image generation on, or name one")
 			return
 		}
 		f.Model, call.Model = m, m
@@ -1093,7 +1093,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		r = heldByGroup(r, g) // held to the group's accounts, if it is
 	}
 	keyWho, keyHeld := keyHolds(r)
-	if keyHeld && named && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
+	if named && (isGroup && !groupGiven(r, keyWho, keyHeld, g, ms) || keyHeld && !isGroup && !modelAllowed(keyWho, p, model)) {
 		fail(keyModelRefusal(w, keyWho, f.Model))
 		return
 	}
@@ -1125,20 +1125,23 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	call.To = provider.Chat
-	var unmask func()
 	prompt := f.Prompt
-	var hits maskHits
-	w, f.Prompt, unmask, hits, err = redactedPromptHits(r.Context(), w, f.Prompt)
-	defer unmask()
-	// the fields passed on as they came are masked as the prompt is: a
-	// negative_prompt is the user's text all the same
-	var extra maskHits
-	if err == nil {
-		err = maskStrings(r.Context(), f.Extra, &extra)
-	}
-	if err != nil { // fails closed
-		fail(maskStatus(err), err.Error())
-		return
+	var hits, extra maskHits
+	// masked unless every model it may start on is a provider the user
+	// set to go unmasked (unmaskedMembers), as a chat's is
+	if !unmaskedMembers(tries) {
+		var unmask func()
+		w, f.Prompt, unmask, hits, err = redactedPromptHits(r.Context(), w, f.Prompt)
+		defer unmask()
+		// the fields passed on as they came are masked as the prompt is: a
+		// negative_prompt is the user's text all the same
+		if err == nil {
+			err = maskStrings(r.Context(), f.Extra, &extra)
+		}
+		if err != nil { // fails closed
+			fail(maskStatus(err), err.Error())
+			return
+		}
 	}
 	n := extra.n
 	hits.add(extra)
@@ -1173,7 +1176,7 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 	for i, m := range tries {
 		model = m.Model
 		at := time.Now()
-		v, code, err = s.startVideo(ctx, r, m.Provider, m.Model, f)
+		v, code, err = s.startVideo(ctx, memberOn(r, g, m), m.Provider, m.Model, f)
 		p, call.Provider = v.p, v.p.ID
 		side.tryAt(candidateOf(v.p, m.Model), at)(code, err)
 		// a group's next member is asked as a chat's would be: while this

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/capre"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
@@ -365,6 +366,13 @@ type Settings struct {
 	// "<provider>|<display name>", which provider.adoptLegacyPluginCheckins
 	// carries over).
 	CheckinOff []string `json:"checkinOff,omitempty"`
+	// CheckinAt is the local time of day ("15:04") every daily check-in,
+	// built-in and plugin, waits for before it asks for the vendor's day
+	// (times_ang on X: 可以调整自动签到的时间吗); "" asks as the day turns,
+	// as before. It holds the day's first ask only: the vendor's own turn
+	// (a plugin's until) and the tries after it are kept, so no day is
+	// skipped (provider.checkinGate).
+	CheckinAt string `json:"checkinAt,omitempty"`
 	// ReplyModel is what a reply's model name says when the request went
 	// out under another name than the one asked for (a group's member, a
 	// model's own id, a provider/model id): "" the model the agent asked
@@ -475,7 +483,7 @@ type Settings struct {
 	// through, its prefix put before the release's github.com URL
 	// (https://mirror.example/https://github.com/…): "" for none, which is
 	// the default — magpie names no mirror of its own. The file is still
-	// checked against the SHA-256 the release's own feed gives,
+	// checked against the SHA-256 the update feed at usemagpie.ai gives,
 	// never one from the mirror. magpie update mirror sets it.
 	UpdateMirror string `json:"updateMirror,omitempty"`
 	// UpdateChannel is which versions an update is offered: "" every
@@ -745,6 +753,12 @@ type Settings struct {
 	// DesktopSubagentEffort fixes Desktop's subagent tool turns at this
 	// reasoning level. Empty keeps the effort each request asks for.
 	DesktopSubagentEffort string `json:"desktopSubagentEffort,omitempty"`
+	// DshCompactModel is the model the gateway puts DeepSeek Harness's
+	// compaction of its context on, whatever model the session is on:
+	// a switch away from a model whose provider has run out of its limit
+	// compacts on the old model first, and failed with it (#5395). ""
+	// leaves each compaction on the model it asks for.
+	DshCompactModel string `json:"dshCompactModel,omitempty"`
 	// FullContext has Codex, Claude Code and Grok Build told a model's whole context
 	// window. Off, a window above WorkingWindow is told as WorkingWindow,
 	// so they compact a long conversation there instead of sending ever
@@ -760,6 +774,13 @@ type Settings struct {
 	// "[1m]", and adds none to one whose id has it. Off, as before, it shows
 	// both, the plain one compacting at Claude Code's 200K.
 	DesktopLongest bool `json:"desktopLongest,omitempty"`
+	// DesktopIsolated runs Claude Desktop on magpie in a folder of its own
+	// (#5671): magpie's 3p mode goes into
+	// ~/Library/Application Support/Claude-Magpie-3p instead of Claude and
+	// Claude-3p, and ~/Applications/Claude Magpie.app starts Desktop with
+	// --user-data-dir set to it, beside the user's own signed-in Desktop,
+	// which is left as it is. macOS only (desktopdir.Isolated).
+	DesktopIsolated bool `json:"desktopIsolated,omitempty"`
 	// GuideHidden: the user put away the Agents page's Get started card
 	// (wangye1644294 on X) before finishing it. Kept here, not in the
 	// page's storage, so the panel, the window and a reload agree.
@@ -1002,6 +1023,12 @@ type Settings struct {
 	// provider has too, in any case, is the model's (axelburks on
 	// Discord). Absent is the provider's alone (provider.SetModelHeaders).
 	ModelHeaders map[string]map[string]string `json:"modelHeaders,omitempty"`
+	// ModelSystemPrompts are the system prompts the user gave one model,
+	// by "<provider id>/<model id>": the gateway adds the text after the
+	// agent's own system prompt on every request for that model, whatever
+	// agent sends it (liucl on X). Absent is the agent's prompt as sent
+	// (provider.ModelSystemPrompt).
+	ModelSystemPrompts map[string]string `json:"modelSystemPrompts,omitempty"`
 	// ModelKinds is what the user said a model makes, by "<provider
 	// id>/<model id>": "image" or "video", for a provider set up with a
 	// base URL whose own model list doesn't say so (shen-joe, #1399).
@@ -1308,7 +1335,7 @@ var DefaultTextSize = func() int {
 	return 100
 }
 
-var validTerminalBundleID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$`)
+var validTerminalBundleID = capre.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`, 255)
 
 // providerID is how a provider's id is spelled: lower-case letters, digits
 // and dashes, as provider.Slug derives it (a custom provider's id is the
@@ -1647,6 +1674,24 @@ func Shared() Settings {
 		return s
 	}
 	return s
+}
+
+// SharedChecked is Shared with LoadChecked's error: the settings without
+// a copy of their own while settings.json parses whole, and LoadChecked's
+// copy (or its error) otherwise. Read only, as Shared is: the gateway's
+// allow list asks on every request the GUI and gateway serve, and a copy
+// each time was most of what a state poll's Settings cost.
+func SharedChecked() (Settings, error) {
+	fileMu.RLock()
+	defer fileMu.RUnlock()
+	if !writing {
+		if b, err := filememo.Read("settings", pathNow(), func(b []byte) ([]byte, error) { return b, nil }); err == nil {
+			if s, ok := sharedFor(b); ok {
+				return s, nil
+			}
+		}
+	}
+	return loadChecked()
 }
 
 // SharedModelIDs is Shared().ModelIDs, read for each model a list is
@@ -2176,6 +2221,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 			return fmt.Errorf("%s's warm-up time of day must look like 06:00 or be off, not %q", user, at)
 		}
 	}
+	if _, _, ok := Clock(s.CheckinAt); s.CheckinAt != "" && !ok {
+		return fmt.Errorf("the check-in's time of day must look like 09:00, not %q", s.CheckinAt)
+	}
 	if !slices.Contains(TrayEvery, s.TrayUsageEvery) {
 		return fmt.Errorf("the menu bar's usage is refreshed every %v minutes, not %d", TrayEvery, s.TrayUsageEvery)
 	}
@@ -2276,6 +2324,10 @@ func saveOwn(s Settings, recording, reads bool) error {
 	s.DesktopSubagentModel = strings.TrimSpace(s.DesktopSubagentModel)
 	if s.DesktopSubagentModel != "" && !strings.Contains(s.DesktopSubagentModel, "/") {
 		return fmt.Errorf("the model for Claude Desktop's subagents must be a model's id such as deepseek/deepseek-v4, not %q", s.DesktopSubagentModel)
+	}
+	s.DshCompactModel = strings.TrimSpace(s.DshCompactModel)
+	if s.DshCompactModel != "" && !strings.Contains(s.DshCompactModel, "/") {
+		return fmt.Errorf("the model for DeepSeek Harness's compaction must be a model's id such as deepseek/deepseek-v4, not %q", s.DshCompactModel)
 	}
 	s.DesktopSubagentEffort = strings.ToLower(strings.TrimSpace(s.DesktopSubagentEffort))
 	if e := s.DesktopSubagentEffort; e != "" && (!slices.Contains(catalog.EffortRank, e) || e == "ultra") {
@@ -2475,6 +2527,11 @@ func (s Settings) normal() Settings {
 		if len(*w.ats) > 0 {
 			*w.at = (*w.ats)[0]
 		}
+	}
+	// the check-in's time of day, as 09:00 whichever way it came
+	s.CheckinAt = strings.TrimSpace(s.CheckinAt)
+	if h, m, ok := Clock(s.CheckinAt); ok {
+		s.CheckinAt = fmt.Sprintf("%02d:%02d", h, m)
 	}
 	// a reply's model name: memberModel, as a magpie before replyModel
 	// kept it, when replyModel isn't set, and kept beside it for that

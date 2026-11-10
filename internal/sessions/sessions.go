@@ -214,32 +214,34 @@ const All = 5000
 // state is what one file's parse has come to, enough to read on from Off.
 type state struct {
 	// the agent whose file it is, for its parseVersions
-	Agent         string            `json:"agent,omitempty"`
-	Codex         *codexUsageState  `json:"-"`
-	codexPath     string            // the rollout read, for its fork's parent
-	Claude        *claudeUsageState `json:"claude,omitempty"`
-	Head          string            `json:"head,omitempty"`
-	HeadSize      int               `json:"head_size,omitempty"`
-	ContentHash   string            `json:"content_hash,omitempty"`
-	Size          int64             `json:"size"`
-	Mod           int64             `json:"mod"` // unix nanoseconds
-	Off           int64             `json:"off"` // after the last whole line read
-	ID            string            `json:"id,omitempty"`
-	CodexIdentity *CodexIdentity    `json:"codex_identity,omitempty"`
-	Cwd           string            `json:"cwd,omitempty"`
-	Title         string            `json:"title,omitempty"`
-	Start         time.Time         `json:"start"`
-	Last          time.Time         `json:"last"`
-	Models        named[Tokens]     `json:"models,omitempty"`
+	Agent     string            `json:"agent,omitempty"`
+	Codex     *codexUsageState  `json:"-"`
+	codexPath string            // the rollout read, for its fork's parent
+	Claude    *claudeUsageState `json:"claude,omitempty"`
+	Head      string            `json:"head,omitempty"`
+	// int32 beside CdRead: the head is headLen bytes at most, and the 8 bytes
+	// it saves take a state from the 448-byte size class to 416 (#2278)
+	HeadSize int32 `json:"head_size,omitempty"`
+	// Claude Code: parsed by a magpie that reads /cd's relocated lines
+	// (ccRelocated), so Cwd is the folder the session was last moved to
+	CdRead        bool           `json:"cd_read,omitempty"`
+	ContentHash   string         `json:"content_hash,omitempty"`
+	Size          int64          `json:"size"`
+	Mod           int64          `json:"mod"` // unix nanoseconds
+	Off           int64          `json:"off"` // after the last whole line read
+	ID            string         `json:"id,omitempty"`
+	CodexIdentity *CodexIdentity `json:"codex_identity,omitempty"`
+	Cwd           string         `json:"cwd,omitempty"`
+	Title         string         `json:"title,omitempty"`
+	Start         time.Time      `json:"start"`
+	Last          time.Time      `json:"last"`
+	Models        named[Tokens]  `json:"models,omitempty"`
 	// Days is Models again, split by the local date each message was
 	// written on: a session that runs past midnight counts on both days.
 	Days named[*day] `json:"days,omitempty"`
 	// Claude Code: the entrypoint its first line naming one says, which
 	// tells a session Claude Desktop's Code tab ran (desktopEntrypoint)
 	Entry string `json:"entry,omitempty"`
-	// Claude Code: parsed by a magpie that reads /cd's relocated lines
-	// (ccRelocated), so Cwd is the folder the session was last moved to
-	CdRead bool `json:"cd_read,omitempty"`
 	// Claude Code: the message last counted, whose later lines repeat it,
 	// and the day it was counted on
 	Msg      string `json:"msg,omitempty"`
@@ -363,8 +365,8 @@ type day struct {
 	// it runs while its session's own file goes on.
 	Active int64 `json:"a,omitempty"`
 	// Hours is Active again, by the local hour of the day it was put on
-	// (24 of them, or none)
-	Hours []int64 `json:"h,omitempty"`
+	// (only the hours that have some, or none; 24 numbers in the cache)
+	Hours hours `json:"h,omitempty"`
 	// Prompts are the messages typed in the session's own file, Replies
 	// the agent's messages back (Claude Code's, Codex's, Pi's and omp's)
 	Prompts int `json:"u,omitempty"`
@@ -469,10 +471,7 @@ func (s *state) saw(t time.Time, main bool) {
 		if gap := t.Sub(s.Last); main && !s.Last.IsZero() && gap < idleGap {
 			d := s.day(dateOf(t))
 			d.Active += gap.Milliseconds()
-			if d.Hours == nil {
-				d.Hours = make([]int64, 24)
-			}
-			d.Hours[t.In(time.Local).Hour()] += gap.Milliseconds()
+			d.Hours.add(t.In(time.Local).Hour(), gap.Milliseconds())
 		}
 		s.Last = t
 	}
@@ -505,9 +504,7 @@ func (s *state) clone() *state {
 	for i, e := range c.Days {
 		v := e.v
 		d := &day{Active: v.Active, Models: slices.Clone(v.Models), Prompts: v.Prompts, Replies: v.Replies}
-		if v.Hours != nil {
-			d.Hours = append([]int64(nil), v.Hours...)
-		}
+		d.Hours = slices.Clone(v.Hours)
 		d.Tools, d.Skills = slices.Clone(v.Tools), slices.Clone(v.Skills)
 		c.Days[i].v = d
 	}
@@ -523,7 +520,7 @@ type file struct {
 	key      string // agent:session id — a session may span files
 	path     string
 	size     int64
-	mod      time.Time
+	mod      modTime
 	main     bool // the session's own file, not a subagent's
 	readOnly bool
 	// cold: the WSL distro the file is in isn't running, and the file, as
@@ -531,6 +528,41 @@ type file struct {
 	cold bool
 	more *fileMore // nil for a file with none of it; shared by copies
 }
+
+// modTime is a file's modification time in unix nanoseconds, 0 for none:
+// a time.Time's 24 bytes made a file 96 bytes where it is now 80, and a
+// Sessions poll copies every session file's into several slices (#2278).
+type modTime int64
+
+func modOf(t time.Time) modTime {
+	if t.IsZero() {
+		return 0
+	}
+	return modTime(t.UnixNano())
+}
+
+// Time is s as os.Stat's ModTime has it, the zero time for none.
+func (s modTime) Time() time.Time {
+	if s == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, int64(s))
+}
+
+// UnixNano is Time().UnixNano(): what a parse kept of the time it was read at.
+func (s modTime) UnixNano() int64 {
+	if s == 0 {
+		return time.Time{}.UnixNano()
+	}
+	return int64(s)
+}
+
+func (s modTime) UnixMilli() int64      { return s.Time().UnixMilli() }
+func (s modTime) IsZero() bool          { return s == 0 }
+func (s modTime) After(t modTime) bool  { return s > t }
+func (s modTime) Before(t modTime) bool { return s < t }
+func (s modTime) Equal(t modTime) bool  { return s == t }
+func (s modTime) Compare(t modTime) int { return cmp.Compare(s, t) }
 
 // fileMore is what a file of some agents has besides.
 type fileMore struct {
@@ -612,7 +644,7 @@ func stat(f *file) bool {
 	if err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
-	f.size, f.mod = fi.Size(), fi.ModTime()
+	f.size, f.mod = fi.Size(), modOf(fi.ModTime())
 	return true
 }
 
@@ -651,12 +683,12 @@ func statFiles(files []file, follow bool) []file {
 				return
 			}
 			if s.Mode == 0 {
-				f.size, f.mod, ok[i] = s.Size, s.Mod, true
+				f.size, f.mod, ok[i] = s.Size, modOf(s.ModTime()), true
 				return
 			}
 		}
 		if fi, err := statOne(f.path, follow); err == nil && fi.Mode().IsRegular() {
-			f.size, f.mod, ok[i] = fi.Size(), fi.ModTime(), true
+			f.size, f.mod, ok[i] = fi.Size(), modOf(fi.ModTime()), true
 		}
 	})
 	for i, l := range listed {
@@ -1090,15 +1122,18 @@ func codexFilesIn(dir string) []file {
 	}
 	// During compression, prefer the readable plain twin in the same
 	// directory: the new compressed file may not have its trailer yet.
-	plain := map[string]bool{}
+	// (a set kept from poll to poll: made new, it was ~0.4 MB of each, #2278)
+	plain := pathSet()
+	defer putPathSet(plain)
 	for _, f := range out {
 		if !strings.HasSuffix(f.path, zstSuffix) {
-			plain[f.path] = true
+			plain[f.path] = struct{}{}
 		}
 	}
 	kept := out[:0]
 	for _, f := range out {
-		if q, ok := strings.CutSuffix(f.path, zstSuffix); !ok || !plain[q] {
+		q, ok := strings.CutSuffix(f.path, zstSuffix)
+		if _, twin := plain[q]; !ok || !twin {
 			kept = append(kept, f)
 		}
 	}
@@ -1167,12 +1202,12 @@ func listedRollouts(root string) (out []file, ok bool) {
 				}
 				if len(seen) > 0 && filepath.Base(seen[0].path) == name {
 					f := seen[0]
-					f.size, f.mod = e.Size, e.Mod
+					f.size, f.mod = e.Size, modOf(e.ModTime())
 					out = append(out, f)
 					continue
 				}
 				if m := rolloutName.FindStringSubmatch(name); m != nil {
-					out = append(out, file{agent: "codex", key: "codex:" + m[1], path: filepath.Join(shown, name), main: true, size: e.Size, mod: e.Mod})
+					out = append(out, file{agent: "codex", key: "codex:" + m[1], path: filepath.Join(shown, name), main: true, size: e.Size, mod: modOf(e.ModTime())})
 					made = true
 				}
 			}
@@ -1843,8 +1878,8 @@ func listing(limit, made int) ([]Session, int, bool) {
 	groups := byKey(files, nil)
 	latest := make(map[string]time.Time, len(groups))
 	for _, f := range files {
-		if f.mod.After(latest[f.key]) {
-			latest[f.key] = f.mod
+		if f.mod.After(modOf(latest[f.key])) {
+			latest[f.key] = f.mod.Time()
 		}
 	}
 	keys := make([]string, 0, len(groups))
@@ -2046,7 +2081,7 @@ func assembleListed(fs []file, price func(string) *catalog.Price, codexTitle fun
 		return a.Model < b.Model
 	})
 	if s.Last.IsZero() {
-		s.Last = fs[0].mod
+		s.Last = fs[0].mod.Time()
 	}
 	if s.Title == "" && s.Tokens.zero() {
 		return s, false // nothing was said in it
@@ -2141,13 +2176,13 @@ func parseRead(f file, old *state, calls *callsRide) *state {
 
 	headBytes := headOf(f.path)
 	var s *state
-	if old != nil && !packed(f.path) && f.size >= old.Size && old.Off <= f.size && sameHead(headBytes, old.Head, old.HeadSize) && old.ContentHash != "" && prefixHash(f.path, old.Size) == old.ContentHash {
+	if old != nil && !packed(f.path) && f.size >= old.Size && old.Off <= f.size && sameHead(headBytes, old.Head, int(old.HeadSize)) && old.ContentHash != "" && prefixHash(f.path, old.Size) == old.ContentHash {
 		s = old.clone()
 	} else {
 		s = &state{}
 	}
 	s.Size, s.Mod = f.size, f.mod.UnixNano()
-	s.Head, s.HeadSize = hashHead(headBytes), len(headBytes)
+	s.Head, s.HeadSize = hashHead(headBytes), int32(len(headBytes))
 	s.CdRead = parser.claude
 	s.ContentHash = prefixHash(f.path, f.size)
 	var head func([]byte) bool

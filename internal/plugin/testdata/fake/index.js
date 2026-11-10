@@ -74,7 +74,11 @@ export const FakePlugin = async ({ client }) => ({
     cfg.provider[ID] = {
       name: "FakeCo",
       npm: "@ai-sdk/openai-compatible",
-      api: "https://fake.invalid/v1",
+      // $FAKE_API: the base the provider says its requests go to, as a
+      // plugin in front of a vendor's own API says it (a Mistral Vibe
+      // plugin's https://api.mistral.ai/v1, #5464); the loader's fetch
+      // still sends to $FAKE_BASE
+      api: process.env.FAKE_API || "https://fake.invalid/v1",
       models: {
         "fake-1": { name: "Fake One", limit: { context: 1000, output: 100 } },
         "fake-claude": { name: "Fake Claude", provider: { npm: "@ai-sdk/anthropic" }, modalities: { input: ["text", "image"], output: ["text"] }, limit: { context: 2000, output: 200 } },
@@ -98,6 +102,13 @@ export const FakePlugin = async ({ client }) => ({
     if (process.env.FAKE_SENSENOVA) {
       cfg.provider[ID].models["sensenova-u1.5-lite"] = { name: "sensenova-u1.5-lite", limit: { context: 131072, output: 32768 } }
       cfg.provider[ID].models["flux-2"] = { name: "Flux 2", provider: { npm: "@ai-sdk/anthropic" }, limit: { context: 1000, output: 100 } }
+    }
+    // $FAKE_DECLARED_DRAWS: image models whose names say nothing, on the
+    // provider's openai-compatible: one that says it gives images alone,
+    // and one that answers in text and images, which chats (maonekone)
+    if (process.env.FAKE_DECLARED_DRAWS) {
+      cfg.provider[ID].models["jimeng-4.0"] = { name: "Jimeng 4.0", modalities: { input: ["text", "image"], output: ["image"] }, limit: { context: 1000, output: 100 } }
+      cfg.provider[ID].models["fake-canvas"] = { name: "Fake Canvas", modalities: { input: ["text"], output: ["text", "image"] }, limit: { context: 1000, output: 100 } }
     }
     // $FAKE_LOOMY: iFlytek's Loomy gateway's three image generators as its
     // /v1/models lists them (#4913), on the provider's openai-compatible;
@@ -365,7 +376,7 @@ export const FakePlugin = async ({ client }) => ({
     id: ID,
     models: async (p, { auth }) => {
       // $FAKE_MODELS_LOG: each time the hook is asked is a line there
-      if (process.env.FAKE_MODELS_LOG) (await import("node:fs")).appendFileSync(process.env.FAKE_MODELS_LOG, "asked\n")
+      if (process.env.FAKE_MODELS_LOG) (await import("node:fs")).appendFileSync(process.env.FAKE_MODELS_LOG, "asked " + (auth?.refresh ?? auth?.key ?? "-") + "\n")
       if (auth?.refresh === "r-dead" || auth?.key === "dead") throw new Error("the vendor refused the sign-in")
       if (auth?.refresh === "r-models-gone") throw Object.assign(new Error("the vendor refused the sign-in"), { signIn: "expired" })
       // a sign-in past its time, said in words only, as Grok's plugin says it
