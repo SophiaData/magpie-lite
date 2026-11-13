@@ -7,48 +7,39 @@ import (
 	"github.com/yetone/magpie/internal/settings"
 )
 
-// The feed is asked by itself as often as Settings says, every six hours
-// when it says nothing, and never with automatic updates off (#472).
+// This build never asks the feed by itself (autoUpdatesDisabled): however
+// the settings are, nothing is due. A check is the user's own (Settings'
+// Check, `magpie update`).
 func TestUpdateDue(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	now := time.Now()
 	s := settings.Load()
-	if s.NoAutoUpdate || s.UpdateEvery != 360 {
-		t.Fatalf("default: auto off %v, every %d", s.NoAutoUpdate, s.UpdateEvery)
-	}
 	for _, c := range []struct {
 		off   bool
 		every int
 		ago   time.Duration
-		due   bool
 	}{
-		{false, 0, 0, false},
-		{false, 360, 5*time.Hour + 59*time.Minute, false},
-		{false, 360, 6 * time.Hour, true},
-		{false, 30, 29 * time.Minute, false},
-		{false, 30, 30 * time.Minute, true},
-		{false, 1440, 7 * time.Hour, false},
-		{false, 1440, 24 * time.Hour, true},
-		{true, 30, 48 * time.Hour, false},
+		{false, 0, 0},
+		{false, 360, 5*time.Hour + 59*time.Minute},
+		{false, 360, 6 * time.Hour},
+		{false, 30, 30 * time.Minute},
+		{false, 1440, 24 * time.Hour},
+		{true, 30, 48 * time.Hour},
 	} {
 		s.NoAutoUpdate, s.UpdateEvery = c.off, c.every
-		if err := settings.Save(s); err != nil {
-			t.Fatal(err)
-		}
-		if got := updateDue(settings.Load(), now.Add(-c.ago), now); got != c.due {
-			t.Errorf("off %v, every %d, %v ago: due %v, want %v", c.off, c.every, c.ago, got, c.due)
+		if got := updateDue(s, now.Add(-c.ago), now); got {
+			t.Errorf("off %v, every %d, %v ago: due %v, want never due", c.off, c.every, c.ago, got)
 		}
 	}
-	// never asked: due at start-up, unless turned off
+	if !autoUpdatesDisabled {
+		t.Fatal("automatic updates are not disabled in this build")
+	}
+	// never asked: not due either
 	s.NoAutoUpdate, s.UpdateEvery = false, 1440
-	if !updateDue(s, time.Time{}, now) {
-		t.Error("never asked, on: not due")
-	}
-	s.NoAutoUpdate = true
 	if updateDue(s, time.Time{}, now) {
-		t.Error("never asked, off: due")
+		t.Error("never asked: due")
 	}
 	// only the presets are kept
 	s.NoAutoUpdate, s.UpdateEvery = false, 120
