@@ -2135,7 +2135,11 @@ magpie.plugin("library", (ctx) => {
       try { localStorage.setItem("magpie.rtkRange", String(r)); } catch {}
       chart.replaceWith(rtkChart(days));
     });
-    head.append(el("span", "label", t(step === 7 ? "Saved by week" : "Saved by day")), seg, el("span", "grow"), el("span", "peak", tokens(peak)));
+    // the bars' scale, the busiest day (week) in the range, said as that:
+    // a bare number there read as RTK's total, one that stopped growing
+    // once no day passed the old busiest (jasonchia58 on X); the Usage page's is #6517
+    head.append(el("span", "label", t(step === 7 ? "Saved by week" : "Saved by day")), seg, el("span", "grow"));
+    if (sum.input) head.append(el("span", "peak", t(step === 7 ? "peak week {n}" : "peak day {n}", { n: tokens(peak) })));
     const bars = el("div", "bars"), labels = el("div", "labels");
     const k = buckets.length;
     const every = k <= 8 ? 1 : k <= 31 ? Math.ceil(k / 6) : Math.ceil(k / 5);
@@ -3560,10 +3564,10 @@ magpie.plugin("library", (ctx) => {
     try {
       const st = await api("library/mcp-signin", { name });
       if (mcpSigning?.name !== name || mcpSigning.id) return; // canceled
-      if (web && st.url) api("open", { url: st.url }).catch(() => {});
+      if (web && st.url && !st.linkOnly) api("open", { url: st.url }).catch(() => {});
       mcpSigning = { ...st, name };
       signMoved(name);
-      if (st.openError) editServer(s);
+      if (st.openError || st.linkOnly) editServer(s);
       followSignIn(st.id, name);
     } catch (e) {
       if (mcpSigning?.name !== name) return;
@@ -3623,15 +3627,20 @@ magpie.plugin("library", (ctx) => {
       }
       box.append(line);
       // the browser didn't start (#2043): the page to open by hand, rather
-      // than waiting on one that never opened until the sign-in times out
-      if (sg?.state === "waiting" && sg.openError && sg.url) {
-        box.append(el("div", "lib-signin-err", t("magpie couldn't open your browser: {error}. Open the sign-in link below in a browser yourself.", { error: sg.openError })));
+      // than waiting on one that never opened until the sign-in times out;
+      // or the user keeps sign-in pages to a browser of their own
+      // (settings.SignInLinkOnly): the link to copy there, or open here
+      if (sg?.state === "waiting" && (sg.openError || sg.linkOnly) && sg.url) {
+        box.append(sg.linkOnly
+          ? el("div", "note", t("magpie didn't open the sign-in page, as set in Settings. Copy the link below into the browser you sign in with."))
+          : el("div", "lib-signin-err", t("magpie couldn't open your browser: {error}. Open the sign-in link below in a browser yourself.", { error: sg.openError })));
         const link = el("div", "lib-signin-link");
         const u = el("code", "", sg.url);
         u.title = sg.url;
         const cp = copyBtn(sg.url, t("Sign-in link"));
         cp.title = t("Copy link");
         link.append(u, cp);
+        if (sg.linkOnly) link.append(button(t("Open in browser"), "", () => browse(sg.url)));
         box.append(link);
       }
       if (sg?.state === "failed") box.append(el("div", "lib-signin-err", sg.error));
@@ -3661,7 +3670,7 @@ magpie.plugin("library", (ctx) => {
           mcpSigning = { name, state: "starting" };
         }
         const st = await api("library/mcp-signin", typeof label === "string" ? { name, add: true, label } : { name });
-        if (web && st.url) api("open", { url: st.url }).catch(() => {});
+        if (web && st.url && !st.linkOnly) api("open", { url: st.url }).catch(() => {});
         mcpSigning = { ...st, name };
         draw();
         followSignIn(st.id, name);
@@ -4106,7 +4115,23 @@ magpie.plugin("library", (ctx) => {
       const g = el("div", "lib-grid");
       if (d.transport === "stdio") {
         const line = lineBox([d.command, ...(d.args || [])].filter((x, i) => i > 0 || x).map(quote).join(" "), "npx -y @modelcontextprotocol/server-github", (v) => { const w = words(v); d.command = w[0] || ""; d.args = w.slice(1); });
-        g.append(...field(t("Command"), line, t("The command and its arguments, as you'd type them")));
+        // a synced server can run its own command here (#3836, #6426;
+        // jinpwng on X: one server on a Mac and in WSL, each with its own
+        // path). Its name, agents and note stay the one server; d.shared
+        // is what the other computers run, the line this computer's
+        const cmdBox = el("div", "lib-cmdbox");
+        cmdBox.append(line);
+        const synced = d.shared ? [d.shared.command, ...(d.shared.args || [])].map(quote).join(" ") : "";
+        if (s && s.transport === "stdio" && !d.local && !s.plugin) {
+          cmdBox.append(d.shared
+            ? button(t("Use the synced command"), "lib-addpair", () => { Object.assign(d, { command: d.shared.command, args: [...(d.shared.args || [])], env: { ...(d.shared.env || {}) } }); d.shared = null; draw(); })
+            : button(t("Use another command on this computer"), "lib-addpair", () => {
+              d.shared = { command: s.shared?.command || s.command, args: [...((s.shared || s).args || [])], env: { ...((s.shared || s).env || {}) } };
+              draw();
+              slot.querySelector(".lib-cmd")?.focus();
+            }));
+        }
+        g.append(...field(t("Command"), cmdBox, d.shared ? t("This computer's own, with its environment below. Your other computers run {cmd}", { cmd: synced }) : t("The command and its arguments, as you'd type them")));
         g.append(...field(t("Environment"), pairs(d.env, "GITHUB_TOKEN", t("value"), (v) => { d.env = v; drawAgents(); }), refHint()));
       } else {
         const url = field2(d.url, "https://example.com/mcp", (v) => { d.url = v.trim(); signBox?.redraw(); });
@@ -4158,7 +4183,7 @@ magpie.plugin("library", (ctx) => {
     // a sign-in's to be of it
     const send = async () => {
       const body = { old: s ? s.name : "", server: { name: d.name, transport: d.transport, agents: d.agents, startupTimeout: d.startupTimeout || 0, local: !!d.local, hub: d.hub || "", note: d.note || "" } };
-      if (d.transport === "stdio") Object.assign(body.server, { command: d.command, args: d.args, env: d.env });
+      if (d.transport === "stdio") Object.assign(body.server, { command: d.command, args: d.args, env: d.env, shared: d.local ? null : d.shared || null });
       else Object.assign(body.server, { url: d.url, headers: d.headers, oauth: d.transport === "http" && d.oauth?.clientId ? d.oauth : null });
       take(await api("library/servers/save", body));
       const was = s;
@@ -5527,6 +5552,11 @@ magpie.plugin("library", (ctx) => {
       head.append(el("span", "grow"), groupChips(live, all, null));
     }
     head.title = folded ? t("Show its skills") : t("Hide its skills");
+    // a click draws it anew, and the first part's only neighbour above is
+    // the list's empty pad: the page held the next part's heading, pushed
+    // down by the rows opened, and scrolled the clicked one away
+    // (jinpwng on X). Held is its list instead, whose top doesn't move.
+    head.dataset.unrolls = "";
     head.onclick = () => {
       if (filtering) { if (folded) unfiltered.delete(fk); else unfiltered.add(fk); }
       else { folds[fk] = !folded; saveFolds(); }

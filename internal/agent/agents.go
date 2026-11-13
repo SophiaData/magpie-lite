@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/catalog"
@@ -62,6 +63,16 @@ func init() {
 	provider.CodexNoAccount = codexNoAccount
 	// and whether the takeover was turned off by the user rather than
 	// ended by the reset (Keep on ChatGPT, Always ChatGPT, a Disconnect)
+	// and when magpie's list is named for the Codex app after its
+	// app-servers started, which list Codex's models alone till then
+	provider.CodexAppDesk = func() time.Time {
+		home, _ := homes()
+		a := codex(home)
+		if a.DeskAt == nil {
+			return time.Time{}
+		}
+		return a.DeskAt()
+	}
 	provider.CodexTakeoverOff = func() bool {
 		home, _ := homes()
 		a := codex(home)
@@ -102,7 +113,8 @@ func init() {
 // and the effort new sessions start at, which the app saves on each pick,
 // so a route that hashed it ended the app every few minutes
 // (indekkusu141209 on X, #4550). A new list is read at the app's next
-// launch, and the Agents row offers a Restart for it (StaleCopies).
+// launch, and the Agents row offers a Restart for it (StaleCopies). The
+// list named where none was is another matter (CodexAppDesk).
 func codexAppRoute() (route string, out, known bool) {
 	// asked every 3s for as long as magpie runs: the config looked at once
 	// for its keys, not once for each (#1665)
@@ -708,11 +720,13 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 // piBlockKept is theirsKept for magpie's provider in a Pi models.json at
 // path, where a sendSessionAffinityHeaders the file already has, the
 // user's own or pi-cache-optimizer's (#1103), stays as it is, as does a
-// model's maxTokens the user typed there (piOutputsKept).
+// model's maxTokens the user typed there (piOutputsKept), and an api they
+// set for the provider or a model (piAPIsKept).
 func piBlockKept(path string, value func() any) func() any {
 	return theirsKept(path, "providers."+magpieID, func() any {
 		v := value()
 		piOutputsKept(path, v)
+		piAPIsKept(path, v)
 		if _, set := edit.GetJSON(path, "providers."+magpieID+".compat.sendSessionAffinityHeaders"); !set {
 			return v
 		}
