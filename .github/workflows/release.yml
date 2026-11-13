@@ -64,9 +64,14 @@ jobs:
         env:
           VERSION: v${{ needs.version.outputs.version }}
         run: |
-          make release-windows VERSION="$VERSION"
-          make release-cli TARGETS="windows/amd64 windows/arm64" VERSION="$VERSION"
-          make release-cli TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 android/arm64" VERSION="$VERSION"
+          # footprint-overlay.sh writes go env GOROOT into its overlay JSON as
+          # is: on this host that is a C:\ path, and go reads the \h of
+          # \hostedtoolcache as a bad escape. The overlay patches
+          # runtime/mem_darwin.go, which these builds only reach when the
+          # macOS runners make them.
+          make release-windows VERSION="$VERSION" OVERLAY=
+          make release-cli TARGETS="windows/amd64 windows/arm64" VERSION="$VERSION" OVERLAY=
+          make release-cli TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 android/arm64" VERSION="$VERSION" OVERLAY=
 
       - uses: actions/upload-artifact@v4
         with:
