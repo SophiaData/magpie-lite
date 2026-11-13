@@ -6,13 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/fx"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -493,7 +495,7 @@ func trayTotalCard(lang, id string, t usage.Totals, currency string, rate float6
 	if p, _ := trayTotalPeriod(id); p == usage.Week {
 		when = "Last 7 days in magpie"
 	}
-	rows := []string{"Σ" + trayCount(t.Tokens()+t.CacheRead+t.CacheWrite)}
+	rows := []string{"Σ" + trayCount(lang, t.Tokens()+t.CacheRead+t.CacheWrite)}
 	tip := trayText(lang, when) + "\n" + trayTokens(lang, t)
 	if t.Cost > 0 {
 		c := usage.FormatCost(t.Cost, currency, rate)
@@ -533,11 +535,11 @@ func trayCurrency() (currency string, rate float64) {
 // trayTokens is a total's every token, the cache's too, with what they
 // were, in lang: "6.3M tokens (912K in · 318K out · 5.1M cached)".
 func trayTokens(lang string, t usage.Totals) string {
-	parts := []string{trayText(lang, "%s in", trayCount(t.Input)), trayText(lang, "%s out", trayCount(t.Output))}
+	parts := []string{trayText(lang, "%s in", trayCount(lang, t.Input)), trayText(lang, "%s out", trayCount(lang, t.Output))}
 	if cached := t.CacheRead + t.CacheWrite; cached > 0 {
-		parts = append(parts, trayText(lang, "%s cached", trayCount(cached)))
+		parts = append(parts, trayText(lang, "%s cached", trayCount(lang, cached)))
 	}
-	return trayText(lang, "%s tokens (%s)", trayCount(t.Tokens()+t.CacheRead+t.CacheWrite), strings.Join(parts, " · "))
+	return trayText(lang, "%s tokens (%s)", trayCount(lang, t.Tokens()+t.CacheRead+t.CacheWrite), strings.Join(parts, " · "))
 }
 
 // trayIdleTip is the tooltip while the menu bar shows no cards: magpie's
@@ -566,10 +568,27 @@ func trayIdleTip(lang string, t usage.Totals, currency string, rate float64) str
 	return "magpie\n" + line + trayText(lang, n, t.Calls)
 }
 
-// trayCount is a count as the Usage page says it in English: 133M, 1.2M,
-// 456K, 8.2K, 950.
-func trayCount(n int) string {
+// trayChineseUnits is Settings' 万/亿 choice, read when a count is said.
+var trayChineseUnits = func() bool { return settings.Load().ChineseUnits }
+
+// trayCount is a count as the Usage page says it (fmtN in app.js): 133M,
+// 1.2M, 456K, 8.2K, 950; with Settings' 万/亿 units and magpie in Chinese,
+// 1.33 亿, 68.1 万 (億 and 萬 in Traditional).
+func trayCount(lang string, n int) string {
 	f := float64(n)
+	if (lang == "zh" || lang == "zh-TW") && trayChineseUnits() {
+		hundredM, tenK := " 亿", " 万"
+		if lang == "zh-TW" {
+			hundredM, tenK = " 億", " 萬"
+		}
+		switch {
+		case n >= 1e8:
+			return strconv.FormatFloat(math.Round(f/1e8*100)/100, 'f', -1, 64) + hundredM
+		case n >= 1e4:
+			return strconv.FormatFloat(math.Round(f/1e4*10)/10, 'f', -1, 64) + tenK
+		}
+		return fmt.Sprint(n)
+	}
 	switch {
 	case n >= 1e9:
 		return fmt.Sprintf("%.2fB", f/1e9)
@@ -756,9 +775,24 @@ const trayRowMax = 10
 
 // trayIconFile is a card's logo among the page's icons, as its icon() has
 // it: a "-color" one and the PNGs in their own colours, the others a black
-// glyph (a mask there); nil when there is no such file (a picture the user
-// gave their own provider isn't one).
+// glyph (a mask there); a stored picture ("file:…", one a plugin or the
+// user gave a provider) read as pageIconOf reads it, through its checked
+// name only; nil when there is no such file.
 func trayIconFile(name string) (b []byte, mono bool) {
+	if own, ok := strings.CutPrefix(name, "file:"); ok {
+		f, _ := provider.IconServed(own)
+		if f == "" {
+			return nil, false
+		}
+		b, err := os.ReadFile(f)
+		if err != nil || len(b) > maxPageIcon {
+			return nil, false
+		}
+		if strings.HasSuffix(own, ".svg") {
+			b = svgArcFlags(b)
+		}
+		return b, false
+	}
 	if name == "" || strings.ContainsAny(name, `/\:`) {
 		return nil, false
 	}
@@ -772,7 +806,7 @@ func trayIconFile(name string) (b []byte, mono bool) {
 	return svgArcFlags(b), !strings.HasSuffix(name, "-color")
 }
 
-var svgPathData = regexp.MustCompile(`\sd="([^"]*[aA][^"]*)"`)
+var svgPathData = lazyre.New(`\sd="([^"]*[aA][^"]*)"`)
 
 // svgArcFlags spaces out the flags of a path's arcs ("a4.5 4.5 0 004.5 0",
 // the flags run into the number after them), which browsers read and the

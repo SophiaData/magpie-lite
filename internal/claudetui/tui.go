@@ -29,16 +29,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/wslrun"
 )
 
@@ -341,7 +342,9 @@ func (s *shim) read() {
 				// a panel can be drawn only for a moment (Claude Code
 				// 2.1.316 draws /usage's windows, then the panel again
 				// without them), so each look of it is kept
-				if t := s.grid.text(); usageUsed.MatchString(t) {
+				// A look saying "Refreshing…" is of the figures Claude
+				// Code saved, not kept (#6376).
+				if t := s.grid.text(); usageUsed.MatchString(t) && !usageRefreshing.MatchString(t) {
 					s.panel = t
 				}
 			}
@@ -352,12 +355,19 @@ func (s *shim) read() {
 			}
 		}
 		if err != nil {
+			// a terminal read non-blocking with nothing to read yet is
+			// not its end: Claude Code would fill the terminal and hang
+			// waiting for a reader (#4834)
+			if errors.Is(err, syscall.EAGAIN) {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
 			return
 		}
 	}
 }
 
-var ansi = regexp.MustCompile(`\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[P^_][^\x1b]*\x1b\\|\x1b.`)
+var ansi = lazyre.New(`\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[P^_][^\x1b]*\x1b\\|\x1b.`)
 
 // plain is what Claude Code drew since the screen was last cleared
 // (clearScreen), its escapes taken out.
@@ -366,6 +376,14 @@ func (s *shim) plain() string {
 	b := string(s.screen)
 	s.screenMu.Unlock()
 	return ansi.ReplaceAllString(b, " ")
+}
+
+// dropPanel forgets the looks of /usage's panel kept so far: they are of
+// the figures Claude Code saved, drawn before it said "Refreshing…".
+func (s *shim) dropPanel() {
+	s.screenMu.Lock()
+	s.panel = ""
+	s.screenMu.Unlock()
 }
 
 func (s *shim) clearScreen() {
@@ -457,17 +475,17 @@ func (s *shim) lastScreen() string {
 }
 
 var (
-	trustNo  = regexp.MustCompile(`❯\s*No,\s*exit`)
-	trustYes = regexp.MustCompile(`❯\s*Yes,\s*I trust`)
+	trustNo  = lazyre.New(`❯\s*No,\s*exit`)
+	trustYes = lazyre.New(`❯\s*Yes,\s*I trust`)
 	// the Bypass Permissions disclaimer's Yes (#5042): the disclaimer
 	// pairs the same "No, exit" with it as the trust question does
-	bypassYes = regexp.MustCompile(`❯\s*Yes,\s*I accept`)
+	bypassYes = lazyre.New(`❯\s*Yes,\s*I accept`)
 	// how long a Yes stays drawn before Enter is pressed on it
 	trustSettle = 300 * time.Millisecond
 )
 
 // lastAt is where re's last match in p starts, -1 with none.
-func lastAt(re *regexp.Regexp, p string) int {
+func lastAt(re *lazyre.RE, p string) int {
 	m := re.FindAllStringIndex(p, -1)
 	if len(m) == 0 {
 		return -1
@@ -500,7 +518,7 @@ var errUntrusted = errors.New(Untrusted + ", which only its user answers")
 // signIn is what Claude Code's interactive mode shows where it is not
 // signed in, as -p may be (CLAUDE_CODE_OAUTH_TOKEN, a container whose
 // ~/.claude.json has no onboarding done): nothing the helper may answer.
-var signIn = regexp.MustCompile(`Select login method|Log in with your Claude account|claude\.ai/oauth/authorize`)
+var signIn = lazyre.New(`Select login method|Log in with your Claude account|claude\.ai/oauth/authorize`)
 
 // The screens Claude Code's interactive mode shows where its onboarding
 // isn't done (a config folder only -p was run in, or one signed in where
@@ -514,8 +532,8 @@ var signIn = regexp.MustCompile(`Select login method|Log in with your Claude acc
 // words, any space between them one: Claude Code draws some by moving the
 // cursor.
 var (
-	firstRun      = regexp.MustCompile(`Security notes:.*Press Enter to continue`)
-	terminalSetup = regexp.MustCompile(`terminal setup\?.*Esc to skip`)
+	firstRun      = lazyre.New(`Security notes:.*Press Enter to continue`)
+	terminalSetup = lazyre.New(`terminal setup\?.*Esc to skip`)
 )
 
 // onboardTries is how often one onboarding screen is answered before the
@@ -805,7 +823,7 @@ func (s *shim) command(name string) error {
 		s.screenMu.Unlock()
 	}()
 	by := time.After(commandWait)
-	last, quiet, drawn, retried := "", time.Now(), false, false
+	last, quiet, drawn, retried, refreshing := "", time.Now(), false, false, false
 	var now, panel string
 	for waiting := true; waiting; {
 		p := s.plain()
@@ -815,7 +833,12 @@ func (s *shim) command(name string) error {
 		}
 		still := time.Since(quiet)
 		loading, failed := usageLoading.MatchString(now), usageFailed.MatchString(now)
-		figures := panel != "" || usageUsed.MatchString(p)
+		// once "Refreshing…" was drawn, what was drawn before it is the
+		// figures Claude Code saved: only the screen as it is now, or a
+		// look of it kept since, has today's. A redraw stalled after its
+		// clear had the saved ones told as today's (#6376).
+		figures := panel != "" || usageUsed.MatchString(p) && !refreshing ||
+			refreshing && usageUsed.MatchString(now) && !usageRefreshing.MatchString(now)
 		switch {
 		case usageStale.MatchString(now) && still >= commandSettle:
 			// the figures drawn are the last ones Claude Code saved,
@@ -827,6 +850,10 @@ func (s *shim) command(name string) error {
 			// Taken once they stood still a second, every read told the
 			// one before it, its time now (jsc9495)
 			s.doing.Store("was still refreshing " + name + "'s figures")
+			if !refreshing {
+				refreshing = true
+				s.dropPanel()
+			}
 		case loading:
 			// the panel is drawn before its figures, which Claude Code
 			// asks Anthropic for: a slow answer kept "Loading usage
@@ -852,7 +879,7 @@ func (s *shim) command(name string) error {
 		// Anything else is waited for only once the panel's tabs are
 		// drawn, and not loading.
 		case figures && still >= commandSettle,
-			(failed || usageDrawn(p) || usageDrawn(now)) && still >= 3*commandSettle:
+			(failed || usageDrawn(p) && !refreshing || usageDrawn(now)) && still >= 3*commandSettle:
 			drawn = true
 		}
 		if drawn {
@@ -870,7 +897,10 @@ func (s *shim) command(name string) error {
 	_, _ = io.WriteString(s.pty, "\x1b")
 	p := s.plain()
 	text := usageText(panel)
-	if panel == "" {
+	switch {
+	case panel == "" && refreshing:
+		text = usageText(now)
+	case panel == "":
 		text = usageText(p)
 	}
 	stale := usageStale.FindString(now)
@@ -921,7 +951,7 @@ func usageDrawn(screen string) bool {
 // limiting requests to the usage page (not your usage limit). Try again
 // in a moment.", "Error: Usage endpoint is rate limited until 12:11am."),
 // which were read as a panel with no window.
-var usageFailed = regexp.MustCompile(`Failed to load usage data|limiting requests to the usage page|Usage endpoint is rate limited`)
+var usageFailed = lazyre.New(`Failed to load usage data|limiting requests to the usage page|Usage endpoint is rate limited`)
 
 // NoUsageWindow is what the helper tells for a /usage panel that loaded
 // with none of the account's windows drawn: each is left out until the
@@ -929,7 +959,7 @@ var usageFailed = regexp.MustCompile(`Failed to load usage data|limiting request
 const NoUsageWindow = "No usage window has started"
 
 // usageWindow is one of the account's windows as usageText tells it.
-var usageWindow = regexp.MustCompile(`(?m)^Current (?:session|week)\b`)
+var usageWindow = lazyre.New(`(?m)^Current (?:session|week)\b`)
 
 // usageNoWindow says whether screen is /usage's panel loaded, its figures
 // told, with none of the account's windows among them: the Usage tab's
@@ -951,11 +981,11 @@ func usageNoWindow(screen string) bool {
 }
 
 var (
-	usageSession = regexp.MustCompile(`\bSession\b|\bTotal cost:`)
-	usageCurrent = regexp.MustCompile(`\bCurrent (?:session|week)\b`)
+	usageSession = lazyre.New(`\bSession\b|\bTotal cost:`)
+	usageCurrent = lazyre.New(`\bCurrent (?:session|week)\b`)
 	// the panel's "Error: …", however many rows it wraps to, up to the
 	// keys it draws under it ("r to retry · Esc to cancel")
-	usageError = regexp.MustCompile(`\bError: .*?(?: r to retry\b|$)`)
+	usageError = lazyre.New(`\bError: .*?(?: r to retry\b|$)`)
 )
 
 // usagePart is the words of /usage's panel in t (its fields joined) that
@@ -972,7 +1002,7 @@ func usagePart(t string) string {
 	return strings.Join(strings.Fields(usageCost.ReplaceAllString(t[at[0]:], "")), " ")
 }
 
-var usageCost = regexp.MustCompile(`\bTotal cost:.*?\bcache write\b`)
+var usageCost = lazyre.New(`\bTotal cost:.*?\bcache write\b`)
 
 // usageWhy is why /usage's panel told no figures, as it says it: its
 // "Error: …" whole, else what it drew from its tabs on, not Claude Code's
@@ -993,16 +1023,16 @@ func usageWhy(screen string) string {
 // own replies ("Partial usage data", "Could not refresh usage data") are
 // today's, and are told.
 var (
-	usageRefreshing = regexp.MustCompile(`\bRefreshing(?:…|\.\.\.)`)
-	usageStale      = regexp.MustCompile(`Showing last-known usage[^\n]*?\)|Showing last-known usage`)
+	usageRefreshing = lazyre.New(`\bRefreshing(?:…|\.\.\.)`)
+	usageStale      = lazyre.New(`Showing last-known usage[^\n]*?\)|Showing last-known usage`)
 )
 
 var (
-	usageName    = regexp.MustCompile(`^(session|week(?: \([^)]*\))?)`)
-	usageUsed    = regexp.MustCompile(`([0-9.]+)%\s+used`)
-	usageReset   = regexp.MustCompile(`Resets (.*?\))`)
-	usagePanel   = regexp.MustCompile(`\bSettings\b.*\bUsage\b`)
-	usageLoading = regexp.MustCompile(`(?i)\bloading\b`)
+	usageName    = lazyre.New(`^(session|week(?: \([^)]*\))?)`)
+	usageUsed    = lazyre.New(`([0-9.]+)%\s+used`)
+	usageReset   = lazyre.New(`Resets (.*?\))`)
+	usagePanel   = lazyre.New(`\bSettings\b.*\bUsage\b`)
+	usageLoading = lazyre.New(`(?i)\bloading\b`)
 )
 
 // usageText is the plan's allowance as /usage's panel shows it, each
@@ -1265,11 +1295,11 @@ func (s *shim) send(pieces []piece) error {
 	return fmt.Errorf("Claude Code did not take the message: %s", s.lastScreen())
 }
 
-var imageShown = regexp.MustCompile(`\[Image #(\d+)\]`)
+var imageShown = lazyre.New(`\[Image #(\d+)\]`)
 
 // promptRule is a row of the rules Claude Code draws over and under its
 // prompt.
-var promptRule = regexp.MustCompile(`^\s*─{20,}\s*$`)
+var promptRule = lazyre.New(`^\s*─{20,}\s*$`)
 
 // prompt is the prompt as the screen shows it, its words one space apart:
 // the rows between the screen's last two rules, "" with no such rows. A
@@ -1304,7 +1334,7 @@ func (s *shim) prompt() string {
 // lastMark is the number of the mark re matches at the end of the prompt
 // as the screen shows it (prompt), 0 with none: the paste taken last, as
 // a paste goes where the prompt's words end.
-func lastMark(re *regexp.Regexp, prompt string) int {
+func lastMark(re *lazyre.RE, prompt string) int {
 	m := re.FindAllStringSubmatchIndex(prompt, -1)
 	if len(m) == 0 || m[len(m)-1][1] != len(prompt) {
 		return 0
@@ -1314,7 +1344,7 @@ func lastMark(re *regexp.Regexp, prompt string) int {
 }
 
 // textLast is Claude Code's whole mark of a long paste.
-var textLast = regexp.MustCompile(`\[Pasted text #(\d+) \+\d+ lines\]`)
+var textLast = lazyre.New(`\[Pasted text #(\d+) \+\d+ lines\]`)
 
 // path is where Claude Code reads a file of the helper's at path: one in
 // WSL under the distro's mount of the drive.
@@ -1373,7 +1403,7 @@ func shownWait(n int) time.Duration {
 	return pasteWait + time.Duration(n/(64<<10))*time.Second
 }
 
-var textShown = regexp.MustCompile(`\[Pasted text #(\d+)`)
+var textShown = lazyre.New(`\[Pasted text #(\d+)`)
 
 // shown waits for the prompt to show pasted text: its last words, or
 // Claude Code's "[Pasted text #<n>" for a long one, numbered past after,

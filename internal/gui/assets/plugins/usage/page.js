@@ -156,7 +156,18 @@ function archivePanel(name, id, redraw) {
 // is kept for the next time the page opens; picked days are not, as they
 // go stale.
 const PERIODS = [["today", "Today"], ["last:24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["all", "All"]];
-try { const v = localStorage.getItem("magpie.usagePeriod"); if (PERIODS.some(([id]) => id === v)) period = v; } catch {}
+// Hours of the reader's own (eachg0 on X): the last N hours, up to now, so
+// yesterday needn't be dug out of the calendar each time the date rolls
+// over. The range menu sets N; the pick and N are kept on this device.
+const HOURS_MAX = 720;
+function periodHours(p) {
+  const m = /^last:(\d+)h$/.exec(p || "");
+  const n = m ? +m[1] : 0;
+  return n >= 1 && n <= HOURS_MAX ? n : 0;
+}
+const keptPeriod = (id) => PERIODS.some(([p]) => p === id) || periodHours(id) > 0;
+const hoursName = (n) => (n === 1 ? t("Last hour") : t("Last {n} hours", { n }));
+try { const v = localStorage.getItem("magpie.usagePeriod"); if (keptPeriod(v)) period = v; } catch {}
 
 // The reader's time zone, which magpie reads the period's days, the chart's
 // hours and a picked day in: magpie web may be read from another zone than
@@ -233,18 +244,20 @@ function renderPeriod(loading) {
   // days of the reader's own (#1492): the last opt names them once picked,
   // and opens the range menu to pick them, or others
   const range = periodDays(period);
-  const b = el("button", "opt range-opt" + (range ? " on" : ""));
+  // hours other than the 24 the preset has name the same chip
+  const hours = PERIODS.some(([id]) => id === period) ? 0 : periodHours(period);
+  const b = el("button", "opt range-opt" + (range || hours ? " on" : ""));
   b.type = "button";
   b.disabled = !!loading;
   b.setAttribute("aria-haspopup", "dialog");
   b.setAttribute("aria-expanded", "false");
-  b.setAttribute("aria-label", range ? t("Days picked: {days}", { days: rangeName(range) }) : t("Pick days"));
-  b.append(svg("M3 4.5h10v8.5H3zM3 7h10M5.5 3v3M10.5 3v3", 12, 1.4), el("span", "", range ? rangeName(range) : t("Custom")));
+  b.setAttribute("aria-label", hours ? t("Hours picked: {hours}", { hours: hoursName(hours) }) : range ? t("Days picked: {days}", { days: rangeName(range) }) : t("Pick days"));
+  b.append(svg("M3 4.5h10v8.5H3zM3 7h10M5.5 3v3M10.5 3v3", 12, 1.4), el("span", "", hours ? hoursName(hours) : range ? rangeName(range) : t("Custom")));
   if (range) b.title = t("Days picked: {days}", { days: rangeName(range) });
   b.onclick = () => {
     if (b.classList.contains("open")) return closeProtoMenu();
     // on a phone the strip is hidden behind the head's menu, which opens it
-    openRangeMenu(b.offsetParent ? b : $("#usageRangeMenu"), range, (from, to) => {
+    openRangeMenu(b.offsetParent ? b : $("#usageRangeMenu"), range, hours, (from, to) => {
       const picked = periodDays(from + ".." + to);
       for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
       b.lastChild.textContent = rangeName(picked);
@@ -252,6 +265,11 @@ function renderPeriod(loading) {
       b.setAttribute("aria-label", b.title);
       slide(seg, "period");
       pickPeriod(from + ".." + to);
+    }, (n) => {
+      for (const x of seg.querySelectorAll(".opt")) x.classList.toggle("on", x === b);
+      b.lastChild.textContent = hoursName(n);
+      slide(seg, "period");
+      pickPeriod("last:" + n + "h");
     });
   };
   seg.append(b);
@@ -293,7 +311,7 @@ function renderPeriod(loading) {
 
 function pickPeriod(id) {
   period = id; ledDay = ""; ledOffset = 0;
-  if (PERIODS.some(([p]) => p === id)) try { localStorage.setItem("magpie.usagePeriod", id); } catch {}
+  if (keptPeriod(id)) try { localStorage.setItem("magpie.usagePeriod", id); } catch {}
   loadUsage().catch((e) => status(e.message, "err"));
 }
 
@@ -317,16 +335,46 @@ function typedTime(v, end) {
   const m = /^([01]?\d|2[0-3]):?([0-5]\d)$/.exec(v);
   return m ? m[1].padStart(2, "0") + ":" + m[2] : null;
 }
+// readsNote: on an empty page, whether magpie is not yet allowed to read the
+// agents' session files, the only reason Claude Code's and Codex's own calls
+// (tokens, time, speed) are missing with no provider set up (simonzyzy on X).
+// It asks once what the Sessions page's consent knows, and says so with the
+// one button that grants it for the agents found.
+async function readsNote(host) {
+  let r;
+  try { r = await api("sessions/reads"); } catch { return; }
+  if (!r || r.asked || r.gateway || !r.found?.length || !host.isConnected) return;
+  const box = el("div", "reads-note");
+  const names = r.found.map((x) => x.name).join(t(", "));
+  box.append(el("p", "", t("magpie reads no agent's session files until you allow it, so {names} calls aren't counted here yet.", { names })));
+  const go = el("button", "text primary", t("Count {names}", { names }));
+  go.type = "button";
+  go.onclick = async () => {
+    go.disabled = true;
+    const agents = {};
+    for (const x of r.found) agents[x.agent] = true;
+    try {
+      await api("sessions/reads", { all: false, agents });
+      await loadUsage();
+    } catch (e) { status(e.message, "err"); go.disabled = false; }
+  };
+  box.append(go);
+  host.append(box);
+}
+
 // noCallsIn is what an empty page says of the period it is on
 function noCallsIn(p) {
   if (periodDays(p)) return "No calls on the days picked.";
+  if (periodHours(p) && p !== "last:24h") return periodHours(p) === 1 ? "No calls in the last hour." : "No calls in the last {n} hours.";
   return { today: "No calls today.", "last:24h": "No calls in the last 24 hours.", "7d": "No calls in the last 7 days.", "30d": "No calls in the last 30 days.", all: "No calls yet." }[p] || "No calls yet.";
 }
 
 // openRangeMenu is the app's own menu for picking days (#1492): a few
 // spans a click away, and a month to pick the first day on, then the last.
 // Days after today can't be picked. choose gets the two days, in order.
-function openRangeMenu(anchor, current, choose) {
+// hours is the last N hours the page is on, 0 when it is not; chooseHours
+// gets N from the row at the menu's top.
+function openRangeMenu(anchor, current, hours, choose, chooseHours) {
   closeProtoMenu();
   const today = dayKeyOf(new Date());
   let start = null; // the first day clicked, waiting for the last
@@ -354,6 +402,25 @@ function openRangeMenu(anchor, current, choose) {
     b.onclick = (e) => { e.stopPropagation(); closeProtoMenu(); choose(r.from, r.to); };
     quick.append(b);
   }
+  // the last N hours, up to now: N is kept on this device
+  const lastH = el("label", "rm-times rm-hours");
+  const hin = el("input", "rm-time");
+  let keptH = 0;
+  try { keptH = periodHours("last:" + localStorage.getItem("magpie.usageHours") + "h"); } catch {}
+  Object.assign(hin, { type: "text", inputMode: "numeric", maxLength: 3, placeholder: "24", value: String(hours || keptH || ""), spellcheck: false, autocomplete: "off" });
+  hin.setAttribute("aria-label", t("hours back"));
+  hin.oninput = () => hin.removeAttribute("aria-invalid");
+  hin.onkeydown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const n = periodHours("last:" + hin.value.trim() + "h");
+    if (!n) return hin.setAttribute("aria-invalid", "true");
+    try { localStorage.setItem("magpie.usageHours", String(n)); } catch {}
+    closeProtoMenu();
+    chooseHours(n);
+  };
+  lastH.append(svg("M8 2.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zM8 5v3.2l2 1.3", 12, 1.4), hin, el("span", "rm-dash", t("hours back")));
   const nav = el("div", "rm-nav");
   const prev = el("button", "rm-step"), next = el("button", "rm-step"), month = el("span", "rm-month");
   prev.type = next.type = "button";
@@ -395,6 +462,7 @@ function openRangeMenu(anchor, current, choose) {
     return true;
   };
   box.append(head, quick, nav, grid, times);
+  if (chooseHours) head.after(lastH);
   const draw = (focusDay) => {
     head.textContent = start ? t("Now the last day") : t("Pick the first day, then the last");
     month.textContent = shown.toLocaleDateString(intlLang(), { year: "numeric", month: "long" });
@@ -747,7 +815,8 @@ function renderUsage() {
   if (empty) {
     stats.classList.add("empty");
     const none = noCallsIn(period);
-    stats.append(el("div", "none", t(none) + " " + t("Point an agent at a catalog model and use it; every call through the gateway is counted here.")));
+    stats.append(el("div", "none", t(none, { n: periodHours(period) }) + " " + t("Calls through the gateway and the calls Claude Code's and Codex's own session files record are counted here, with no provider set up.")));
+    readsNote(stats);
     $("#usageNote").textContent = "";
     $("#usageClear").hidden = true;
     return;
@@ -775,7 +844,7 @@ function renderUsage() {
   // written count is secondary and only fits in the tooltip.
   // a vendor that counts no cache (cache_unknown) is left out (#3464)
   const hitRate = cacheHitOf(u);
-  const hit = u.cache_read && hitRate !== null ? t("hit rate {p}", { p: Math.round(100 * hitRate) + "%" }) : "";
+  const hit = u.cache_read && hitRate !== null ? t("hit rate {p}", { p: hitPct(hitRate) }) : "";
   tile(fmtN(u.cache_read), t("cache read"), hit, u.cache_write ? t("{n} written", { n: fmtN(u.cache_write) }) + cacheTTLs(u, fmtN) : "");
   tile(fmtN(u.reasoning), t("reasoning"), t("inside output"));
   tile(String(u.calls), t(u.calls === 1 ? "call" : "calls"), [u.credited ? ledCredits(u).textContent : "", u.errors ? t("{n} failed", { n: u.errors }) : "", u.retried ? t("{n} answered on a retry", { n: u.retried }) : "", u.canceled ? t("{n} canceled", { n: u.canceled }) : "", u.unpriced ? unpricedCalls(u.unpriced) : ""].filter(Boolean).join(" · "), u.unpriced ? unpricedCallsWhy(u.unpriced) : "");
@@ -854,7 +923,7 @@ function renderUsage() {
       // how much of its prompt came from the cache, counted as the cache
       // read tile counts it (#925)
       const hitRate = cacheHitOf(g);
-      const hit = g.cache_read && hitRate !== null ? " · " + t("hit rate {p}", { p: Math.round(100 * hitRate) + "%" }) : "";
+      const hit = g.cache_read && hitRate !== null ? " · " + t("hit rate {p}", { p: hitPct(hitRate) }) : "";
       num.append(el("b", "", fmtN(usageTokens(g))), el("small", "", t("{a} in · {b} out", { a: fmtN(g.input), b: fmtN(g.output) }) + (g.cache_read ? " · " + t("{n} cached", { n: fmtN(g.cache_read) }) : "") + hit));
       r.append(num);
       r.append(el("div", "cost", fmtCost(g) ? "≈" + fmtCost(g) : ""));
@@ -929,7 +998,7 @@ function renderUsage() {
       const again = agentMenu?.anchor === b;
       closeAgentMenu();
       if (again) return;
-      openRowMenu(b, [{ name: "Clear usage…", icon: USAGE_CLEAR, run: () => clearUsage(g) }]);
+      openRowMenu(b, [{ name: "Set price…", icon: PRICE_TAG, run: () => setModelPrice(g.model) }, { name: "Clear usage…", icon: USAGE_CLEAR, run: () => clearUsage(g) }]);
     };
     b.onclick = (e) => { e.stopPropagation(); menu(); };
     r.oncontextmenu = (e) => { e.preventDefault(); menu(); };
@@ -971,6 +1040,77 @@ async function clearUsage(g) {
   } catch (e) {
     status(e.message, "err");
   }
+}
+
+// setModelPrice: a model's price from any provider (*/model), from its row
+// on the Usage page (soilzhu80 on X): a model an agent ran is often in no
+// provider's list, so no provider's Model settings can price it. Empty
+// boxes take the maker's list price, shown greyed; Restore default takes
+// the set price away. The pages count past calls at it too.
+const PRICE_TAG = "M8.5 2.5H13.5V7.5L7.5 13.5L2.5 8.5ZM10.8 5.2h.01";
+async function setModelPrice(model) {
+  let now;
+  try { now = await api("model-price?model=" + encodeURIComponent(model)); } catch (e) { return status(e.message, "err"); }
+  const shown = (n) => String(Math.round(n * 1e6) / 1e6);
+  const ed = el("div", "editor price-ask");
+  const head = el("div", "ehead");
+  head.append(el("b", "", t("Price of {model}", { model })));
+  ed.append(head, el("p", "lib-confirm", t("What {model} costs from every provider that has no price of its own for it. The Usage and Sessions pages count its calls at it, past ones too.", { model })));
+  const box = el("div", "price-ask-parts");
+  box.append(el("span", "price-ask-unit", t("Price, $ / 1M tokens")));
+  const cells = [["input", "Input"], ["output", "Output"], ["cache_read", "Cache read"], ["cache_write", "Cache write"]].map(([k, l]) => {
+    const part = el("label", "mpart");
+    const i = input(now.price ? shown(now.price[k]) : "", now.maker ? shown(now.maker[k]) : "");
+    i.inputMode = "decimal";
+    i.dataset.part = k;
+    part.append(el("span", "", t(l)), i);
+    box.append(part);
+    return i;
+  });
+  const bad = el("p", "hint price-ask-bad");
+  bad.hidden = true;
+  ed.append(box, bad);
+  const send = async (price, said) => {
+    try {
+      await api("model-price", { model, price });
+      closeConfirmAsk();
+      status(said, "ok");
+      ledger = null;
+      loadUsage();
+    } catch (e) { bad.textContent = e.message; bad.hidden = false; }
+  };
+  const go = el("button", "text primary", t("Save"));
+  go.onclick = (e) => {
+    e.stopPropagation();
+    const typed = cells.map((i) => i.value.trim());
+    if (typed.every((v) => !v)) return now.price ? send(null, t("{model} is counted at its list price again", { model })) : closeConfirmAsk();
+    const price = {};
+    for (const [n, i] of cells.entries()) {
+      const k = i.dataset.part, v = typed[n] ? decimalOf(typed[n]) : now.maker ? now.maker[k] : n < 2 ? NaN : 0;
+      if (!(v >= 0)) {
+        bad.textContent = typed[n] || now.maker ? t("A price is a number of dollars, 0 or more") : t("{id} has no list price: give its input and output prices", { id: model });
+        bad.hidden = false;
+        return i.focus(NO_SCROLL);
+      }
+      price[k] = v;
+    }
+    send(price, t("{model} is counted at the price you set", { model }));
+  };
+  for (const i of cells) i.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter") go.click(); else if (e.key === "Escape") closeConfirmAsk(); };
+  const bar = el("div", "bar");
+  if (now.price) {
+    const back = el("button", "text", t("Restore default"));
+    back.onclick = (e) => { e.stopPropagation(); send(null, t("{model} is counted at its list price again", { model })); };
+    bar.append(back);
+  }
+  const cancel = el("button", "text", t("Cancel"));
+  cancel.onclick = (e) => { e.stopPropagation(); closeConfirmAsk(); };
+  bar.append(el("span", "grow"), cancel, go);
+  ed.append(bar);
+  confirmAsk = ed;
+  openModal(ed);
+  $("#modal").classList.add("lib");
+  cells[0].focus(NO_SCROLL);
 }
 
 // countable is whether the Usage page's Agents list offers to count a
@@ -1064,7 +1204,52 @@ const cardPeeked = (q) => !!usagePeek && (trayCardID(q) === usagePeek || q.provi
 function overviewCards(list) {
   const hid = hiddenCards();
   list = sharedBalances(list);
-  return hid.size ? list.filter((q) => !hid.has(cardHideKey(q)) || cardPeeked(q)) : list;
+  list = hid.size ? list.filter((q) => !hid.has(cardHideKey(q)) || cardPeeked(q)) : list;
+  return list.map(withoutHiddenRows);
+}
+// A card's quota rows can be hidden one by one (wangshaowei39 on X:
+// Antigravity's Claude & GPT rows unwanted), by provider and row group, a
+// pool's or family's name else the window's (windowGroup), in
+// settings.usageWindowsHidden, every account of the provider alike. Only
+// the Overview's copy loses them; a card is never left with none.
+const windowGroup = (w) => w.pool || w.family || w.name;
+const windowHideKey = (q, g) => q.provider + "|" + g;
+const hiddenRows = () => new Set(state.settings?.usageWindowsHidden || []);
+function withoutHiddenRows(q) {
+  const hid = hiddenRows();
+  if (!hid.size || q.error || !q.windows?.length) return q;
+  const ws = q.windows.filter((w) => !hid.has(windowHideKey(q, windowGroup(w))));
+  return ws.length && ws.length < q.windows.length ? { ...q, windows: ws } : q;
+}
+// hiddenRowList: the rows the Overview leaves out, one a provider and group,
+// those of a card with every row named showing again excepted
+function hiddenRowList() {
+  const hid = hiddenRows(), out = [], seen = new Set();
+  if (!hid.size) return out;
+  for (const q of quotas || []) {
+    if (q.error || !q.windows?.length) continue;
+    const gone = q.windows.filter((w) => hid.has(windowHideKey(q, windowGroup(w))));
+    if (gone.length === q.windows.length) continue;
+    for (const w of gone) {
+      const key = windowHideKey(q, windowGroup(w));
+      if (!seen.has(key)) { seen.add(key); out.push({ key, q, group: windowGroup(w) }); }
+    }
+  }
+  return out;
+}
+// quotaRowMenuItems: Hide for the row under the pointer, else for each row
+// of the card, when it has more than one
+function quotaRowMenuItems(card, target, of) {
+  const q = of[0];
+  const groups = [...new Set((q.windows || []).map(windowGroup))];
+  if (q.error || groups.length < 2) return [];
+  // the row under the pointer, told by its name: a pool's window is named
+  // "Pool · 5 hours", a family's and a model's by their own
+  const row = target?.closest?.(".quota");
+  const name = row && card.contains(row) && row.querySelector(".quota-name")?.textContent;
+  const own = name && [...familyWindows(q.windows), ...q.windows].find((w) => t(w.name) === name);
+  const pick = own ? [windowGroup(own)] : groups;
+  return pick.map((g, i) => ({ name: t("Hide {name} from Overview", { name: t(g) }), literal: true, icon: EYE_OFF, sep: i === 0, run: () => hideQuotaRows([windowHideKey(q, g)], true) }));
 }
 // quotaCardMenus gives a card its menu: a right-click, the keyboard's menu
 // key on its handle, or on a touch screen a long press (iOS Safari sends
@@ -1089,19 +1274,33 @@ function quotaCardMenus(card, subs) {
   const stop = () => { clearTimeout(press?.timer); press = null; };
   card.addEventListener("pointerdown", (e) => {
     stop();
-    if (e.pointerType !== "touch" || usageArranging || e.target.closest(".us-handle, input, textarea")) return;
+    if (e.pointerType !== "touch" || usageArranging || e.target.closest(".us-handle, .us-more, input, textarea")) return;
     const at = e.target;
     press = { x: e.clientX, y: e.clientY, timer: setTimeout(() => { press = null; quotaPressed = performance.now(); quotaCardMenu(at, card, subs); }, 550) };
   });
   card.addEventListener("pointermove", (e) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 8) stop(); });
   for (const k of ["pointerup", "pointercancel", "pointerleave"]) card.addEventListener(k, stop);
 }
-function quotaCardMenu(target, card, subs) {
+// quotaCardMore: the card's ⋯ at its head's end, the same menu where it
+// is seen (jen_celeus on X: OpenCode Zen's card, with no usage to show,
+// wanted hiding, and a right-click is nowhere to be seen); shown as the
+// card is hovered, as an Agents row's is, and always where nothing hovers
+function quotaCardMore(card, subs) {
+  const b = el("button", "icon us-more");
+  b.type = "button";
+  b.setAttribute("aria-haspopup", "menu");
+  b.setAttribute("aria-label", t("Actions for {name}", { name: quotaName(subs[0]) }));
+  b.title = b.getAttribute("aria-label");
+  b.append(svg(DOTS, 14, 2.2));
+  b.onclick = (e) => { e.stopPropagation(); quotaCardMenu(b, card, subs, b); };
+  return b;
+}
+function quotaCardMenu(target, card, subs, from) {
   let part = [...card.children].find((c) => c.contains(target));
   while (part && !part.classList.contains("subscription-account") && !part.classList.contains("subscription-head")) part = part.previousElementSibling;
   const who = part?.classList.contains("subscription-account") && subs.find((q) => trayCardID(q) === part.dataset.card);
   const of = who ? [who] : subs;
-  const anchor = card.querySelector(".us-handle") || card.querySelector(".subscription-head");
+  const anchor = from || card.querySelector(".us-handle") || card.querySelector(".subscription-head");
   const again = agentMenu?.anchor === anchor;
   closeAgentMenu();
   if (again) return;
@@ -1109,12 +1308,14 @@ function quotaCardMenu(target, card, subs) {
   // a card shown though hidden, a menu bar cell having asked for it
   // (usagePeek): its way back, not Hide again
   const hid = hiddenCards(), peeked = of.flatMap(cardHideKeys).filter((k) => hid.has(k));
-  const others = hiddenQuotas().length;
+  const others = hiddenQuotas().length + hiddenRowList().length;
+  const rows = peeked.length ? [] : quotaRowMenuItems(card, target, of);
   openRowMenu(anchor, [
     ...(peeked.length ? [{ name: "Show in Overview", icon: EYE, run: () => hideQuotaCards(peeked, false) }]
       : [{ name: who && subs.length > 1 ? "Hide this account from Overview" : "Hide from Overview", icon: EYE_OFF, run: () => hideQuotaCards(of.flatMap(cardHideKeys), true) }]),
     // a plan's card showing its key's balance: the balance alone
     ...(one?.balanceCard && !peeked.length ? [{ name: "Hide its balance from Overview", icon: EYE_OFF, run: () => hideQuotaCards([one.balanceCard + "|balance"], true) }] : []),
+    ...rows,
     // the ones hidden already, from the menu that hid them
     ...(others ? [{ name: t("Show {n} Hidden", { n: others }), literal: true, icon: EYE, sep: true, run: (e) => openHidden(e, "quotaHid", () => { quotaHidOpen = true; renderQuotaHid(); }) }] : []),
   ]);
@@ -1128,7 +1329,8 @@ function hiddenQuotas() {
 // opening them, each with Unhide, and Show all
 function renderQuotaHid() {
   const hb = $("#quotaHid");
-  const hidden = hiddenQuotas();
+  const cards = hiddenQuotas(), rowList = hiddenRowList();
+  const hidden = [...cards, ...rowList];
   hb.hidden = !hidden.length;
   if (!hidden.length) { quotaHidOpen = false; return; }
   const line = hb.querySelector(".us-hidline"), hl = hb.querySelector(".list");
@@ -1140,7 +1342,7 @@ function renderQuotaHid() {
   }
   all.textContent = t("Show all");
   all.hidden = !quotaHidOpen || hidden.length < 2;
-  all.onclick = () => hideQuotaCards(hidden.map(cardHideKey), false);
+  all.onclick = () => { if (cards.length) hideQuotaCards(cards.map(cardHideKey), false); if (rowList.length) hideQuotaRows(rowList.map((r) => r.key), false); };
   line.replaceChildren(el("span", "", t("{n} hidden", { n: hidden.length })), svg(CHEV, 11, 1.6));
   line.title = t("Hidden from the Overview only: they are still used and counted. Click to see them.");
   line.setAttribute("aria-expanded", String(quotaHidOpen));
@@ -1148,7 +1350,7 @@ function renderQuotaHid() {
   hl.hidden = !quotaHidOpen;
   hl.replaceChildren();
   if (!quotaHidOpen) return;
-  for (const q of hidden) {
+  for (const q of cards) {
     const r = el("div", "row stat hid acts");
     r.dataset.id = cardHideKey(q);
     r.append(icon(q.icon));
@@ -1159,6 +1361,40 @@ function renderQuotaHid() {
     b.onclick = (e) => { e.stopPropagation(); hideQuotaCards([cardHideKey(q)], false); };
     r.append(who, b);
     hl.append(r);
+  }
+  for (const { key, q, group } of rowList) {
+    const r = el("div", "row stat hid acts");
+    r.dataset.id = key;
+    r.append(icon(q.icon));
+    const who = el("div", "who");
+    who.append(el("div", "name", quotaName(q)), el("div", "sub", t(group)));
+    const b = el("button", "text us-unhide", t("Unhide"));
+    b.type = "button";
+    b.onclick = (e) => { e.stopPropagation(); hideQuotaRows([key], false); };
+    r.append(who, b);
+    hl.append(r);
+  }
+}
+// hideQuotaRows hides a card's rows from the Overview, or has them back:
+// drawn at once, put back if the save fails
+async function hideQuotaRows(keys, hide) {
+  const prev = state.settings || {};
+  const cur = (prev.usageWindowsHidden || []).filter((k) => !keys.includes(k));
+  const windowsHidden = hide ? [...cur, ...keys] : cur;
+  state.settings = { ...prev, usageWindowsHidden: windowsHidden };
+  const again = () => {
+    renderQuotas();
+    const to = $("#quotaHid .us-hidline");
+    (hide && to && !to.closest("[hidden]") ? to : null)?.focus({ preventScroll: true });
+  };
+  again();
+  try {
+    const s = await api("usage/arrange", { windowsHidden });
+    state.settings = { ...state.settings, usageWindowsHidden: s.usageWindowsHidden || [] };
+  } catch (e) {
+    state.settings = prev;
+    again();
+    status(e.message, "err");
   }
 }
 // hideQuotaCards hides cards from the Overview, or has them back: drawn at
@@ -1397,7 +1633,7 @@ function renderLedgerLoading() {
 
 function ledTime(when) {
   const d = new Date(when), now = new Date();
-  const opts = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+  const opts = { hour: "2-digit", minute: "2-digit", second: "2-digit", ...hourClock() };
   if (d.toDateString() !== now.toDateString()) Object.assign(opts, { month: "short", day: "numeric" });
   return d.toLocaleString(intlLang(), opts);
 }
@@ -1525,6 +1761,19 @@ function renderLedReq() {
   pane.replaceChildren(bar, head, ledDetail(r));
 }
 
+// the service tier of a request (OpenAI's words: priority, flex, default…):
+// what the client asked for, what went out to the vendor when that differs
+// (a fast pick, a plan without Ultrafast), and what the vendor's reply said
+// it ran at. Each is told only when the row has it: a tier the reply never
+// named is not said to have been served.
+function ledTierText(r) {
+  const parts = [];
+  if (r.tier_asked) parts.push(t("asked {tier}", { tier: r.tier_asked }));
+  if (r.tier_sent && r.tier_sent !== r.tier_asked) parts.push(t("sent {tier}", { tier: r.tier_sent }));
+  if (r.tier_served) parts.push(t("answered {tier}", { tier: r.tier_served }));
+  return parts.join(" · ");
+}
+
 // what is known of one request: when, who sent it and from where, what
 // it asked for and what answered, what it cost and took, the id its
 // vendor gave it, the path it went to, and, if it failed, what the vendor
@@ -1535,7 +1784,7 @@ function ledDetail(r) {
     if (value === "" || value == null) return;
     dl.append(el("dt", "", t(name)), el("dd", cls || "", value));
   };
-  add("Time", new Date(r.t).toLocaleString(intlLang(), { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }), "led-when");
+  add("Time", new Date(r.t).toLocaleString(intlLang(), { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", ...hourClock() }), "led-when");
   {
     const name = r.agentName || r.agent;
     const at = r.computerName ? t("{agent} · on {computer}", { agent: name, computer: r.computerName }) : name;
@@ -1559,6 +1808,7 @@ function ledDetail(r) {
   add("Sent", r.model);
   if (r.served) add("Served", ledServed(r));
   add("Effort", r.effort);
+  add("Service tier", ledTierText(r));
   if (ledFailed_(r)) {
     add("Status", r.status ? String(r.status) : "—", "bad");
     add("Error type", r.err_type, "bad");
@@ -1786,10 +2036,84 @@ function ledShowStatus(to) {
   loadLedger().catch((e) => status(e.message, "err"));
 }
 
+// ---------- model speed ranking ----------
+//
+// Each model's median speed and first-token wait over the period's
+// requests (@flying_crp on X: how slow is gpt, really), counted by the
+// ledger with the page (usage.ModelSpeed): failed, canceled and short
+// replies are left out. Sortable by any column; the fastest first.
+let ledSpeedSort = { key: "tps", dir: -1 };
+const LED_SPEED_COLS = [
+  { key: "name", label: "Model", dir: 1 },
+  { key: "tps", label: "Speed", dir: -1 },
+  { key: "ttft_ms", label: "First token", dir: 1 },
+  { key: "requests", label: "Requests", dir: -1 },
+];
+function ledSpeedOrder(list) {
+  const { key, dir } = ledSpeedSort;
+  return [...list].sort((a, b) => {
+    // a model with nothing measured goes last, whichever way it is sorted
+    if (key === "tps" || key === "ttft_ms") {
+      const x = a[key] || 0, y = b[key] || 0;
+      if (!x !== !y) return x ? -1 : 1;
+      if (x !== y) return dir * (x - y);
+    } else if (key === "name") {
+      const c = (a.name || a.model).localeCompare(b.name || b.model);
+      if (c) return dir * c;
+    } else if (a[key] !== b[key]) return dir * (a[key] - b[key]);
+    return b.requests - a.requests || (a.name || a.model).localeCompare(b.name || b.model);
+  });
+}
+function drawLedSpeed(l) {
+  const box = $("#ledSpeed");
+  const list = l.speeds || [];
+  box.hidden = !list.length;
+  box.replaceChildren();
+  if (box.hidden) return;
+  const head = el("div", "led-bar");
+  const title = el("b", "led-spd-t", t("Model speed"));
+  title.title = t("Medians of the answered requests that wrote {n} tokens or more", { n: l.speed_min || 100 });
+  head.append(title);
+  const table = el("table", "led-spd");
+  const hr = el("tr");
+  for (const c of LED_SPEED_COLS) {
+    const th = el("th", c.key === "name" ? "nm" : "n");
+    const on = ledSpeedSort.key === c.key;
+    th.setAttribute("aria-sort", on ? (ledSpeedSort.dir > 0 ? "ascending" : "descending") : "none");
+    const b = el("button", "led-spd-h" + (on ? " on" : ""), t(c.label));
+    b.type = "button";
+    b.onclick = () => {
+      ledSpeedSort = on ? { key: c.key, dir: -ledSpeedSort.dir } : { key: c.key, dir: c.dir };
+      drawLedSpeed(l);
+      $("#ledSpeed .led-spd-h.on")?.focus({ preventScroll: true });
+    };
+    th.append(b);
+    hr.append(th);
+  }
+  const thead = el("thead");
+  thead.append(hr);
+  const body = el("tbody");
+  for (const x of ledSpeedOrder(list)) {
+    const tr = el("tr");
+    const name = el("td", "nm", x.name || x.model);
+    name.title = x.name || x.model;
+    tr.append(name,
+      el("td", "n" + (x.tps ? "" : " faint"), x.tps ? t("{n} tok/s", { n: ledNum(Math.round(x.tps)) }) : "—"),
+      el("td", "n" + (x.ttft_ms ? "" : " faint"), x.ttft_ms ? ledTook(x.ttft_ms) : "—"),
+      el("td", "n", ledNum(x.requests)));
+    body.append(tr);
+  }
+  table.append(thead, body);
+  const scroll = el("div", "led-spd-scroll");
+  scroll.append(table);
+  box.append(head, scroll);
+}
+
 function renderLedgerDash(l) {
   const dash = $("#ledDash");
   dash.hidden = !l.total && !l.day;
   if (dash.hidden) return;
+  drawLedSpeed(l);
   const total = allTokens(l);
   // of the calls whose vendor counted the cache: none when no call's was (#3464)
   const rate = cacheHitOf(l);
@@ -1855,7 +2179,7 @@ function renderLedgerDash(l) {
   // the count in the words the quick panel uses too, the whole sentence on
   // hover (tenacious_eagle on Discord)
   block("Cost", c ? "≈" + c : "—", line(l.unpriced ? unpricedCalls(l.unpriced) : t("effective prices")), c ? "cost" : "", l.unpriced ? unpricedCallsWhy(l.unpriced) : "");
-  const hit = block("Cache hit rate", rate === null ? "—" : (100 * rate).toFixed(1) + "%", cacheLeftOut(l) ? line(cacheLeftOut(l)) : null, "", t("The share of the prompt read from the cache"));
+  const hit = block("Cache hit rate", rate === null ? "—" : hitPct(rate, 1), cacheLeftOut(l) ? line(cacheLeftOut(l)) : null, "", t("The share of the prompt read from the cache"));
   const meter = el("div", "meter"), fill = el("i");
   fill.style.width = (100 * (rate || 0)).toFixed(1) + "%";
   meter.append(fill);
@@ -2346,7 +2670,7 @@ new ResizeObserver(() => {
 // prompt, writes included; null for a vendor that counts no cache
 // (#3464) or a request with no prompt counted
 const ledCacheHit = (r) => r.cache_unknown ? null : cacheHitOf({ input: r.in, cache_read: r.cache_read, cache_write: r.cache_write });
-const ledHitText = (h) => h === null ? "" : Math.round(100 * h) + "%";
+const ledHitText = (h) => h === null ? "" : hitPct(h);
 const LED_COLS = [
   ["Time"], ["Agent"], ["Requested"], ["Provider · account"], ["Sent", "", true], ["Served"], ["Effort", "", true],
   ["In", "n"], ["Out", "n"], ["Cache write", "n", true], ["Cache read", "n", true], ["Cache hit rate", "n", 2, "The share of the prompt read from the cache"], ["Cost", "n"], ["TTFT", "n", 2, "Time to first token"], ["Duration", "n"], ["Speed", "n"], ["Status"],
@@ -2642,6 +2966,13 @@ function renderLedger() {
     if (l.canceled) say("{n} canceled", l.canceled);
   }
   $("#ledSum").textContent = sum.join(" · ");
+  // the request that wrote the most to the cache, one click from its detail (recih on X, #6199)
+  const big = l.big_write;
+  if (l.total && big?.route) {
+    const jump = el("button", "text", t("{n} largest write", { n: fmtN(big.n) }));
+    jump.onclick = () => window.openUsageRoute({ id: big.route, time: big.at, model: big.model });
+    $("#ledSum").append(" · ", jump);
+  }
   $("#ledSum").title = sum.join() == exact.join() ? "" : exact.join(" · ");
   // the two sources and their total, in the same block of cells as the totals
   // above them: what magpie carried, what it only read about in the agents'
@@ -2720,7 +3051,8 @@ function renderLedger() {
     wrap.classList.add("none");
     const filtered = ledPurpose || ledDay || ledRoute || ledAgent || ledProvider || ledAccount || ledComputer || ledCallerKey || ledModel || ledVia || ledFailed || ledRetried || ledQuery.trim();
     const none = noCallsIn(period);
-    wrap.replaceChildren(el("div", "led-none", filtered ? t("No requests match these filters.") : t(none)));
+    wrap.replaceChildren(el("div", "led-none", filtered ? t("No requests match these filters.") : t(none, { n: periodHours(period) })));
+    if (!filtered) readsNote(wrap.firstChild);
     ledFit();
     ledHScroll();
     pager.hidden = true;
@@ -3168,6 +3500,7 @@ function renderUsageTab() {
   seg.replaceChildren();
   for (const [id, name] of USAGE_TABS) {
     const b = el("button", "opt" + (id === usageTab ? " on" : ""), t(name));
+    b.dataset.seg = id;
     b.onclick = () => {
       if (id === usageTab) return;
       if (usageTab === "requests") ledLeave();
@@ -3662,7 +3995,7 @@ function renderSessions() {
     tile(c ? "≈" + c : "—", t("cost"), unpricedModels || t("at effective prices"), unpricedNote);
     // input leaves out what was read from the cache and written to it
     const prompt = tot.input + tot.cache_read + tot.cache_write;
-    tile(fmtN(tot.cache_read), t("cache read"), tot.cache_read && prompt ? t("hit rate {p}", { p: Math.round(100 * tot.cache_read / prompt) + "%" }) : "", tot.cache_write ? t("{n} written", { n: fmtN(tot.cache_write) }) : "");
+    tile(fmtN(tot.cache_read), t("cache read"), tot.cache_read && prompt ? t("hit rate {p}", { p: hitPct(tot.cache_read / prompt) }) : "", tot.cache_write ? t("{n} written", { n: fmtN(tot.cache_write) }) : "");
     tile(active == null ? "—" : fmtDur(active), t("active"), active == null ? t("not kept by model") : t(days === 1 ? "on {n} day" : "on {n} days", { n: days }),
       t("The time the sessions were at work: the pauses between one message and the next, each under five minutes"), "dur");
     // how many folders, and how much of it the first took
@@ -3675,7 +4008,7 @@ function renderSessions() {
     grid.hidden = false;
     // the folders and models to pick from, as the pickers offer them
     sessBars($("#sessProjects"), "Projects", sessSums(rows.filter((r) => byAgent(r) && byModel(r)), "cwd"), sessFolder, (v) => { sessFolder = v; renderSessions(); }, baseName);
-    sessBars($("#sessModels"), "Models", sessSums(rows.filter((r) => byAgent(r) && byFolder(r)), "model"), sessModel, (v) => { sessModel = v; renderSessions(); }, (v) => v);
+    sessBars($("#sessModels"), "Models", sessSums(rows.filter((r) => byAgent(r) && byFolder(r)), "model"), sessModel, (v) => { sessModel = v; renderSessions(); }, (v) => v, (r, v) => openRowMenu(r, [{ name: "Set price…", icon: PRICE_TAG, run: () => setModelPrice(v.slice(v.lastIndexOf("/") + 1)) }]));
     renderSessHours($("#sessHours"), actsIn);
     renderSessTop();
     renderSessShape();
@@ -4307,7 +4640,7 @@ function sessLineUp(box) {
 // sessBars is a card of folders or models as bars of the tokens each took;
 // a click shows that one alone, and a click on it again every one
 const SESS_BARS = 6;
-function sessBars(box, title, items, cur, choose, name) {
+function sessBars(box, title, items, cur, choose, name, menu) {
   box.replaceChildren();
   box.append(sessCardHead(title));
   const body = el("div", "sess-bars");
@@ -4326,6 +4659,8 @@ function sessBars(box, title, items, cur, choose, name) {
     const fc = x.cost ? fmtCost(x) : "";
     r.append(el("span", "n", name(x.v)), track, el("span", "v", fmtN(x.n)), el("span", "c", fc ? "≈" + fc : ""));
     r.onclick = () => choose(x.v === cur ? "" : x.v);
+    // a model's bar: its price, on a right-click
+    if (menu) r.oncontextmenu = (e) => { e.preventDefault(); menu(r, x.v); };
     body.append(r);
   }
   if (!items.length) body.append(el("div", "sess-none", t("Nothing in this range.")));
@@ -4473,7 +4808,7 @@ function renderUsageEvery() {
   // on the Overview it reads the allowances again too (#486: they had a
   // Refresh of their own beside it)
   const what = usageTab === "usage" ? t("Refresh now, the allowances too; a Claude account's is read by running Claude Code's own /usage") : t("Refresh now");
-  r.title = usageReadAt ? what + " · " + t("Updated {time}", { time: new Date(usageReadAt).toLocaleTimeString(intlLang(), { hour12: false }) }) : what;
+  r.title = usageReadAt ? what + " · " + t("Updated {time}", { time: new Date(usageReadAt).toLocaleTimeString(intlLang(), { ...hourClock() }) }) : what;
   r.setAttribute("aria-label", t("Refresh now"));
   r.onclick = async () => {
     r.classList.add("busy");
@@ -4573,7 +4908,7 @@ if (mode === "window" && params.get("view") === "usage") {
   if (tab === "requests" || tab === "usage") usageTab = tab;
   // a total in the menu bar opens the Overview at its period
   const per = params.get("period");
-  if (PERIODS.some(([id]) => id === per)) period = per;
+  if (keptPeriod(per)) period = per;
   quotaFocus = usageTab === "usage" ? (params.get("card") || params.get("provider") || "") : "";
   usagePeek = quotaFocus;
   quotaFocusUntil = performance.now() + 5000;

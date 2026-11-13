@@ -61,9 +61,15 @@ type RequestPage struct {
 	// other computer's calls were brought here by sync (#542)
 	Computers []Share
 	Names     map[string]string
+	// Speeds are the models of the rows the filter keeps, ranked by the
+	// median speed of their requests (speed_rank.go)
+	Speeds []ModelSpeed
 	// Heat is the rows by day, as the chart's filter keeps them: only for
 	// the heatmap's own period (HeatmapOf)
 	Heat *Heatmap
+	// Big is the request that wrote the most to the cache, of the rows the
+	// filter keeps
+	Big BigWrite
 }
 
 type packedRow struct {
@@ -723,8 +729,11 @@ type requestIndex struct {
 	// heats are the heatmap's last pages, kept while the agents' session
 	// files are all that changed (heatFresh)
 	heats map[pageKey]heatPage
-	// idle trims the chunks once the page goes unasked (keepWhileAsked)
-	idle *time.Timer
+	// idle trims the chunks once the page goes unasked (keepWhileAsked),
+	// and forget lets the rest go requestForget later; asks counts the
+	// asks, so a forget armed before the last one lets nothing go
+	idle, forget *time.Timer
+	asks         uint64
 	// parts are the cells of each chunk the last pages of a few partKeys
 	// were added up from, by chunk serial: kept until what prices or
 	// names a call changes (meta), and read without the lock, since a
@@ -793,6 +802,12 @@ var (
 	requestCacheBytes int64 = 128 << 20
 	requestIdleBytes  int64 = 24 << 20
 	requestIdle             = 2 * time.Minute
+	// requestForget is how long after the trim the rest go too. Nothing
+	// asks for them while no page is open, so what the start or the last
+	// visit read (~11 MB of a real history's chunks) was kept for the life
+	// of the process. The next page reads them back from the file of them
+	// (toDisk), decoded and not parsed again.
+	requestForget = 5 * time.Minute
 )
 
 func statKey(path string) string {
@@ -875,6 +890,9 @@ func readRequestState(now time.Time) requestState {
 		}
 	}
 	meta += fmt.Sprintf("|%x|%s", h.Sum(nil), liveListKey("antigravity"))
+	// Group spellings also name chart shares and the model filter. A change
+	// must invalidate cells whose filter was judged under the old namespace.
+	meta += "|" + provider.UsageNamesKey()
 	h.Reset()
 	snapshot := readLogSnapshot()
 	fmt.Fprint(h, meta, snapshot.version, now.In(time.Local).Format("2006-01-02 MST"))
@@ -1159,32 +1177,7 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now, settle
 	// Swapped's names are a few hundred pairs over thousands of files' calls,
 	// and its regexps were a third of reading them again (#3493). Each
 	// reader of the session files has a pricer of its own, with its memos.
-	pricers := func() func(Record, string) Row {
-		price := Pricer()
-		swapped := map[[4]string]bool{}
-		return func(r Record, source string) Row {
-			sent := r.Model
-			if source == "" {
-				sent = provider.SentNameIn(cfg.Wires(), r.priceID(), r.Model, r.Effort)
-			}
-			row := Row{Record: r, Source: source, Routed: GroupRouted(sent, r.Served)}
-			if r.Served != "" {
-				k := [4]string{r.priceID(), r.Model, sent, r.Served}
-				s, ok := swapped[k]
-				if !ok {
-					s = Swapped(sent, r.Served) && !ListedAs(r.priceID(), r.Model, r.Served)
-					swapped[k] = s
-				}
-				row.Swapped = s
-			}
-			if pr := price(r); pr != nil && r.Input+r.Output > 0 {
-				row.Priced = true
-				row.Cost = r.CostAt(*pr)
-			}
-			row.Agent, row.Client = reportedAs(r.Agent)
-			return row
-		}
-	}
+	pricers := func() func(Record, string) Row { return sessionRowPricer(cfg) }
 	priceRow := pricers()
 	since := p.Since(now)
 	gatewaySince := since
@@ -1247,20 +1240,7 @@ func readRequestBlocks(idx *requestIndex, st requestState, p Period, now, settle
 	makeChunk := func() func(sessions.CallSource) *rowChunk {
 		priceRow := pricers()
 		build := func(s sessions.CallSource) *rowChunk {
-			cs := readSource(s)
-			c := &rowChunk{Source: s, Rows: make([]packedRow, 0, len(cs))}
-			for _, call := range cs {
-				r := logRecord(call)
-				r.SessionAccount = resolver().resolve(call)
-				r.SessionOfficialLogin = resolver().officialLogin(call, r.SessionAccount)
-				r.SessionProvider = call.Upstream
-				row := priceRow(r, "log")
-				row.codexActor = codexActor(call)
-				c.add(row, call.Msg, call.To, call.Error != "")
-			}
-			c.Bytes -= int64(32 * len(c.Strings))
-			c.dict, c.shapeIDs = nil, nil // local chunks are immutable until the source changes
-			return c.pack()
+			return sessionChunk(s, readSource(s), priceRow, resolver())
 		}
 		if !share {
 			return build
@@ -1557,6 +1537,10 @@ func (idx *requestIndex) save() {
 // asked for, and to requestIdleBytes once it has gone unasked for
 // requestIdle. idx is locked.
 func (idx *requestIndex) keepWhileAsked() {
+	idx.asks++
+	if idx.forget != nil {
+		idx.forget.Stop()
+	}
 	if idx.idle != nil {
 		idx.idle.Reset(requestIdle)
 		return
@@ -1565,6 +1549,18 @@ func (idx *requestIndex) keepWhileAsked() {
 		idx.Lock()
 		defer idx.Unlock()
 		idx.trim(requestIdleBytes)
+		asks := idx.asks
+		forget := func() {
+			idx.Lock()
+			defer idx.Unlock()
+			if idx.asks == asks { // not asked for since the trim
+				idx.trim(0)
+			}
+		}
+		if idx.forget != nil {
+			idx.forget.Stop()
+		}
+		idx.forget = time.AfterFunc(requestForget, forget)
 	})
 }
 
@@ -1699,6 +1695,7 @@ var msgKeysOpening func(*rowChunk)
 // cold start's pairing of the whole history kept all of them, ~67 MB of
 // its ~460 MB live heap, beside the period's that polls read (#2278).
 func msgKeysOf(chunks []*rowChunk) []*chunkMsgKeys {
+	derivedUsed()
 	settled := settledBefore(time.Now())
 	msgKeys.Lock()
 	msgKeys.turn++
@@ -2322,7 +2319,7 @@ func sharesOf(m map[string]*Share) []Share {
 	return out
 }
 func buildRequestPage(p Period, f Filter, offset, limit int, gateway *rowChunk, chunks []*rowChunk) RequestPage {
-	return buildRequestBlocks(p, f, offset, limit, Clock(), []*rowChunk{gateway}, chunks, nil, nil)
+	return buildRequestBlocks(p, f, offset, limit, localNow(), []*rowChunk{gateway}, chunks, nil, nil)
 }
 
 // Shared days are never matched to this computer's gateway or session calls.
@@ -2488,7 +2485,7 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	groups := map[string]map[string]*Share{}
 	chartGroups := map[string]map[string]*Share{}
 	seriesGroups := map[string]map[string]*Share{}
-	keys := keyer{}
+	keys := newKeyer()
 	for _, d := range Dimensions {
 		groups[d] = map[string]*Share{}
 		chartGroups[d] = map[string]*Share{}
@@ -2525,6 +2522,7 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 		newestParts = parts
 	}
 	var first time.Time
+	speeds := speedRank{}
 	// Each dimension's groups are counted with its own pick cleared, and
 	// the computers' with the computer's and day's (cellPass): a cell's
 	// bits say which of them its rows are in, and its sums (d), made once,
@@ -2539,6 +2537,8 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 		s.plus(d)
 	}
 	for _, part := range parts {
+		speeds.merge(part.speeds)
+		out.Big.merge(part.big)
 		if !part.first.IsZero() && (first.IsZero() || part.first.Before(first)) {
 			first = part.first
 		}
@@ -2656,6 +2656,7 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	slices.Sort(out.Purposes)
 	out.CallerKeys = callerGroups(callers)
 	out.Accounts = callerGroups(accounts)
+	out.Speeds = speeds.result()
 	for _, d := range Dimensions {
 		out.By[d] = sharesOf(groups[d])
 	}
@@ -2726,7 +2727,7 @@ func buildRequestBlocksIn(p Period, f Filter, offset, limit int, now time.Time, 
 	return out
 }
 func pageFromLedger(p Period, f Filter, offset, limit int, all Ledgered) RequestPage {
-	return pageFromLedgerAt(p, f, offset, limit, all, Clock())
+	return pageFromLedgerAt(p, f, offset, limit, all, localNow())
 }
 
 // pageFromLedgerAt is the page of a ledger read at now, its chart over the
@@ -2771,6 +2772,14 @@ func pageFromLedgerAt(p Period, f Filter, offset, limit int, all Ledgered, now t
 	out.Accounts = callerGroups(accounts)
 	offset = min(offset, len(l.Rows))
 	out.Rows = l.Rows[offset:min(len(l.Rows), offset+limit)]
+	speeds := speedRank{}
+	for _, r := range l.Rows {
+		if !r.IsRejected() && !r.IsProbe() {
+			speeds.add(&r)
+			out.Big.add(&r)
+		}
+	}
+	out.Speeds = speeds.result()
 	chartRows := l.Rows
 	if f.Day != "" {
 		chartFilter := f
@@ -2900,7 +2909,11 @@ func prefetchEach[T any](sources []sessions.CallSource, want func(sessions.CallS
 	if len(order) < 2 {
 		return alone
 	}
-	workers := min(8, len(order))
+	// Four, not eight: each worker holds a file's calls while it reads,
+	// and a first build (any upgrade that changes this package) peaked
+	// ~19 MB higher with eight (physical footprint 258 MB against 240,
+	// five cold starts each on a real history) for no shorter build.
+	workers := min(4, len(order))
 	window := make(chan struct{}, 4*workers)
 	next := make(chan int)
 	go func() {
@@ -2932,4 +2945,51 @@ func prefetchEach[T any](sources []sessions.CallSource, want func(sessions.CallS
 		s.v = zero
 		return v
 	}
+}
+
+// sessionRowPricer makes a session file's calls rows, priced and named;
+// each reader of the files has one of its own, with its memos.
+func sessionRowPricer(cfg settings.Settings) func(Record, string) Row {
+	price := Pricer()
+	swapped := map[[4]string]bool{}
+	return func(r Record, source string) Row {
+		sent := r.Model
+		if source == "" {
+			sent = provider.SentNameIn(cfg.Wires(), r.priceID(), r.Model, r.Effort)
+		}
+		row := Row{Record: r, Source: source, Routed: GroupRouted(sent, r.Served)}
+		if r.Served != "" {
+			k := [4]string{r.priceID(), r.Model, sent, r.Served}
+			s, ok := swapped[k]
+			if !ok {
+				s = Swapped(sent, r.Served) && !ListedAs(r.priceID(), r.Model, r.Served)
+				swapped[k] = s
+			}
+			row.Swapped = s
+		}
+		if pr := price(r); pr != nil && r.Input+r.Output > 0 {
+			row.Priced = true
+			row.Cost = r.CostAt(*pr)
+		}
+		row.Agent, row.Client = reportedAs(r.Agent)
+		return row
+	}
+}
+
+// sessionChunk is s's calls as a chunk of rows, made through priceRow.
+func sessionChunk(s sessions.CallSource, calls []sessions.Call, priceRow func(Record, string) Row, resolver *sessionResolver) *rowChunk {
+	cs := ownCalls(calls)
+	c := &rowChunk{Source: s, Rows: make([]packedRow, 0, len(cs))}
+	for _, call := range cs {
+		r := logRecord(call)
+		r.SessionAccount = resolver.resolve(call)
+		r.SessionOfficialLogin = resolver.officialLogin(call, r.SessionAccount)
+		r.SessionProvider = call.Upstream
+		row := priceRow(r, "log")
+		row.codexActor = codexActor(call)
+		c.add(row, call.Msg, call.To, call.Error != "")
+	}
+	c.Bytes -= int64(32 * len(c.Strings))
+	c.dict, c.shapeIDs = nil, nil // local chunks are immutable until the source changes
+	return c.pack()
 }

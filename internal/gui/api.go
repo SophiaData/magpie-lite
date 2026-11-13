@@ -10,7 +10,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,7 +22,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -35,6 +33,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/applog"
 	"github.com/yetone/magpie/internal/autostart"
+	"github.com/yetone/magpie/internal/bark"
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
@@ -42,6 +41,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/ghtoken"
 	"github.com/yetone/magpie/internal/lastgood"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/mcpauth"
 	"github.com/yetone/magpie/internal/middleware"
@@ -150,9 +150,6 @@ var cliBehindVal string
 // Version is the build's version string, shown in Settings.
 var Version = "dev"
 
-//go:embed assets
-var assets embed.FS
-
 // Windows is what the API needs from the host application.
 type Windows interface {
 	HidePanel()
@@ -189,6 +186,9 @@ type fieldJSON struct {
 	Label   string         `json:"label"`
 	Value   string         `json:"value"`
 	Options []agent.Option `json:"options"`
+	// List is, in place of Options, which of the state's OptionLists the
+	// field offers, from 1 (shareOptions); 0 when Options is its own
+	List int `json:"list,omitempty"`
 }
 
 type agentJSON struct {
@@ -235,6 +235,9 @@ type agentJSON struct {
 	// Isolated: Claude Desktop's Claude Magpie app (#5671), only where it
 	// can be (macOS): whether it is on, and the app
 	Isolated *agent.DesktopIsolated `json:"isolated,omitempty"`
+	// Telemetry: the agent's own telemetry to its vendor, where magpie
+	// knows the switch for it (agent/telemetry.go)
+	Telemetry *agent.TelemetryState `json:"telemetry,omitempty"`
 	// Joined: connected with its own models still in its list (Codex
 	// signed in with ChatGPT, agent.Agent.Join)
 	Joined bool `json:"joined,omitempty"`
@@ -262,6 +265,9 @@ type agentJSON struct {
 	// copies; Terminal: and opens in a terminal, this system having one
 	Command  string `json:"command,omitempty"`
 	Terminal bool   `json:"terminal,omitempty"`
+	// OpenApp: its row menu opens the desktop app, not only a terminal
+	// (Codex, by the setting codexOpen, Yink88564391 on X)
+	OpenApp bool `json:"openApp,omitempty"`
 }
 
 // clientJSON is an agent, or another client the gateway knows, as a
@@ -333,6 +339,16 @@ type stateJSON struct {
 	// GatewayOther is a magpie of another version serving the gateway in
 	// this one's place, which the Agents page says (gateway_older.go)
 	GatewayOther *gatewaySkew `json:"gatewayOther,omitempty"`
+	// GatewayHeld: the program that has the gateway's port when this magpie
+	// couldn't listen on it, as far as it could be read (gateway.PortHeld)
+	GatewayHeld *gateway.PortHeld `json:"gatewayHeld,omitempty"`
+	// OptionLists are the fields' option lists, each once, that a field's
+	// List names (shareOptions), as indexes into Options, where each option
+	// is once: with real accounts 13 agents' model pickers offered the same
+	// 51KB catalog, 650KB of a 690KB state, beside a few models of their
+	// own. Last of the fields: writeStateJSON writes them after the rest.
+	OptionLists [][]int32       `json:"optionLists,omitempty"`
+	Options     []*agent.Option `json:"options,omitempty"`
 }
 
 // unlistedJSON is a model of a provider kept for routing groups, and the
@@ -418,6 +434,15 @@ type settingsJSON struct {
 	AllowIPsEnv     string   `json:"allowIPsEnv,omitempty"`
 	AllowIPsFromEnv []string `json:"allowIPsFromEnv,omitempty"`
 	OnNetwork       bool     `json:"onNetwork,omitempty"`
+	// the client certificates issued and still good (mtls.go), while
+	// other computers can reach magpie or mTLS is on; MTLSSaved: the
+	// folder the one just issued was saved to
+	MTLSCerts []mtlsCert `json:"mtlsCerts,omitempty"`
+	MTLSErr   string     `json:"mtlsError,omitempty"`
+	MTLSSaved string     `json:"mtlsSaved,omitempty"`
+	// JoinOn: a password is set to join with (join.go); the password
+	// itself is never sent
+	JoinOn bool `json:"joinOn,omitempty"`
 	// Dir is the data folder beside a portable magpie (#508)
 	Portable bool `json:"portable,omitempty"`
 	// Log is the log the desktop app writes (applog), as shown; "" for a
@@ -444,11 +469,15 @@ type settingsJSON struct {
 	// it is served by magpie web, where the mode can be set
 	GatewayOn  bool   `json:"gatewayOn,omitempty"`
 	GatewayWhy string `json:"gatewayWhy,omitempty"`
-	Web        bool   `json:"web,omitempty"`
+	// GatewayPaused: the user paused the gateway (gatewaypause.go)
+	GatewayPaused bool `json:"gatewayPaused,omitempty"`
+	Web           bool `json:"web,omitempty"`
 	// the proxy vendor requests go through now, and where it came from:
 	// settings, environment, system, off or none
-	ProxyNow    string `json:"proxyNow"`
-	ProxySource string `json:"proxySource"`
+	// SavedProxies are the named proxies, without their passwords
+	SavedProxies []savedProxyJSON `json:"proxies"`
+	ProxyNow     string           `json:"proxyNow"`
+	ProxySource  string           `json:"proxySource"`
 	// whether magpie opens at login: the system's record, not a setting;
 	// LoginAllow, the record is there but the user switched it off in
 	// System Settings › Login Items, which is where it's allowed again
@@ -535,6 +564,8 @@ type settingsJSON struct {
 	// the token set in Settings was refused by GitHub (401): it is still
 	// shown, masked, while requests go without a token (#3926)
 	GitHubTokenRefused bool `json:"githubTokenRefused,omitempty"`
+	// whether a Bark device key is set; never the key (EV_John_Liu on X)
+	BarkKeySet bool `json:"barkKeySet,omitempty"`
 	// where other machines reach the gateway while it is shared
 	LANURLs []string `json:"lanURLs,omitempty"`
 	// LANURLs are a container's own addresses, not the host's: the page
@@ -572,6 +603,9 @@ type settingsJSON struct {
 	// Claude Code's two prompt-cache lifetimes as it reads them
 	// (agent.TuneRead): the rows beside its compaction in its settings
 	ClaudeCache []claudeCacheJSON `json:"claudeCache,omitempty"`
+	// ClaudeAttribution: whether Claude Code adds its Co-Authored-By trailer
+	// ("on", "off", or "custom" for the user's own text)
+	ClaudeAttribution string `json:"claudeAttribution,omitempty"`
 	// the magpie model Codex's config runs, when its own window is no
 	// larger than Long conversations' threshold: Codex compacts it at 90%
 	// of that window (codexWindowUnder)
@@ -815,6 +849,10 @@ func settingsState() settingsJSON {
 	if list, env := gateway.AllowIPs(); env {
 		s.AllowIPsEnv, s.AllowIPsFromEnv = os.Getenv(gateway.AllowIPsEnv), list
 	}
+	if s.LAN || s.OnNetwork || s.MTLS {
+		s.MTLSCerts, s.MTLSErr = mtlsCerts()
+	}
+	s.JoinOn = access.JoinOn()
 	if s.LAN || gateway.OnNetwork() {
 		s.PublicURL = gateway.PublicURL()
 		s.PublicKind = gateway.URLKind(s.PublicURL)
@@ -822,7 +860,9 @@ func settingsState() settingsJSON {
 	s.WSL = runtime.GOOS == "windows"
 	s.Web = webPage.Load()
 	s.GatewayOn, s.GatewayWhy = gatewayMode(s.Web)
+	s.GatewayPaused = pausedNow()
 	s.LANKey = "" // the retained credential belongs on disk, not in UI state
+	s.BarkKeySet, s.BarkKey = strings.TrimSpace(s.BarkKey) != "", ""
 	// the GitHub token, masked, and where the library's requests take one
 	// from: Settings, or the environment variable named
 	own := strings.TrimSpace(s.GitHubToken)
@@ -845,6 +885,7 @@ func settingsState() settingsJSON {
 		s.NotifyProblem = notifyProblem()
 	}
 	s.ProxyNow, s.ProxySource = netproxy.Describe()
+	s.Settings.Proxies, s.SavedProxies = nil, savedProxies() // passwords stay on disk
 	s.NoAccountsEnv = settings.AccountDiscoveryOff() && !s.NoAccountDiscovery
 	for _, name := range []string{"MAGPIE_OTEL_ENABLED", "MAGPIE_OTEL_ENDPOINT", "MAGPIE_OTEL_HEADERS", "MAGPIE_OTEL_METRICS", "MAGPIE_OTEL_BODIES", "MAGPIE_OTEL_BODIES_WHOLE", "MAGPIE_OTEL_SESSIONS"} {
 		if _, ok := os.LookupEnv(name); ok {
@@ -864,6 +905,7 @@ func settingsState() settingsJSON {
 	s.CodexAsyncHeld = agent.CodexAsyncHeld()
 	s.CodexCompactKeys = codexKeysText(agent.CodexCompactHeld(""))
 	s.ClaudeCache = claudeCacheState()
+	s.ClaudeAttribution = agent.ClaudeAttribution("")
 	s.CodexWindow = codexWindowUnder(s.Settings.ForAgent("codex"), agent.CodexModel(""))
 	s.WorkBuddy, s.WorkBuddyCheckins = provider.HasWorkBuddy(), provider.WorkBuddyCheckins()
 	s.Trae, s.TraeCheckins = provider.HasTrae(), provider.TraeCheckins()
@@ -888,8 +930,9 @@ func settingsState() settingsJSON {
 		}
 	}
 	s.TitleModels, s.MaskRouteModels = []modelRef{}, []modelRef{}
-	// only a provider set to go unmasked can take one (most have none)
-	unmaskedAny := slices.ContainsFunc(provider.All(), provider.Provider.SkipsRedaction)
+	// only a provider or a group set to go unmasked can take one (most have none)
+	unmaskedAny := slices.ContainsFunc(provider.All(), provider.Provider.SkipsRedaction) ||
+		slices.ContainsFunc(provider.Groups(), func(g provider.Group) bool { return g.Redact == provider.RedactOff })
 	s.UnmaskedProviders = []modelRef{}
 	for _, p := range provider.All() {
 		if p.SkipsRedaction() {
@@ -997,7 +1040,14 @@ var onDock func(settings.Settings)
 var assetTypes = map[string]string{".svg": "image/svg+xml", ".png": "image/png", ".css": "text/css; charset=utf-8",
 	".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8"}
 
-func init() {
+// addAssetTypes is called by Handler, not init: the mime package reads
+// and parses the system's whole type table (/etc/apache2/mime.types,
+// ~18,000 allocations) the first time a type is added, and a launch that
+// serves no page (`magpie statusline` on every Claude Code message) never
+// needs it.
+var addAssetTypes = sync.OnceFunc(registerAssetTypes)
+
+func registerAssetTypes() {
 	for ext, t := range assetTypes {
 		mime.AddExtensionType(ext, t)
 	}
@@ -1024,15 +1074,11 @@ func revalidated(next http.Handler) http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		b, err := fs.ReadFile(staticFS(), name)
-		if err != nil {
+		sum, page, ok := staticSum(name, r.URL.Path == "/")
+		if !ok {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if r.URL.Path == "/" {
-			b = versionedPage(b)
-		}
-		sum := sha256.Sum256(b)
 		rw.Header().Set("ETag", `"`+hex.EncodeToString(sum[:12])+`"`)
 		rw.Header().Set("Cache-Control", "no-cache")
 		// a file asked for by the address the page names it by, its
@@ -1045,7 +1091,7 @@ func revalidated(next http.Handler) http.Handler {
 		}
 		if r.URL.Path == "/" {
 			rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-			http.ServeContent(rw, r, "index.html", time.Time{}, bytes.NewReader(b))
+			http.ServeContent(rw, r, "index.html", time.Time{}, bytes.NewReader(page))
 			return
 		}
 		next.ServeHTTP(rw, r)
@@ -1054,19 +1100,58 @@ func revalidated(next http.Handler) http.Handler {
 
 // pageFile is a script or stylesheet of the page's own, named in it: one
 // of the page's, or of a built-in plugin's under plugins/<id>/.
-var pageFile = regexp.MustCompile(`(src|href)="([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.(?:js|css))"`)
+var pageFile = lazyre.New(`(src|href)="([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.(?:js|css))"`)
 
 // versionedPage is the page with each of its own scripts and stylesheets
 // named with its content's hash; one not among the page's files (boot.js,
 // which the API writes) keeps its name.
+// staticSum is the sha256 of a static file, or with root of the page as
+// versionedPage names its files, and that page: made once in a build,
+// whose files never change (staticFixed). Each load read every file
+// whole and hashed it again, the page's scripts twice, ~17 MB of a page
+// load with app.js alone over a megabyte (#2278). ok is false for a file
+// that can't be read, which isn't kept.
+func staticSum(name string, root bool) (sum [32]byte, page []byte, ok bool) {
+	key := name
+	if root {
+		key = "/"
+	}
+	if staticFixed {
+		if v, hit := staticSums.Load(key); hit {
+			a := v.(staticFile)
+			return a.sum, a.page, true
+		}
+	}
+	b, err := fs.ReadFile(staticFS(), name)
+	if err != nil {
+		return sum, nil, false
+	}
+	if root {
+		b = versionedPage(b)
+		page = b
+	}
+	sum = sha256.Sum256(b)
+	if staticFixed {
+		staticSums.Store(key, staticFile{sum, page})
+	}
+	return sum, page, true
+}
+
+// staticSums are staticSum's answers by name ("/" for the page).
+var staticSums sync.Map
+
+type staticFile struct {
+	sum  [32]byte
+	page []byte
+}
+
 func versionedPage(page []byte) []byte {
 	return pageFile.ReplaceAllFunc(page, func(m []byte) []byte {
 		g := pageFile.FindSubmatch(m)
-		b, err := fs.ReadFile(staticFS(), string(g[2]))
-		if err != nil {
+		sum, _, ok := staticSum(string(g[2]), false)
+		if !ok {
 			return m
 		}
-		sum := sha256.Sum256(b)
 		return []byte(fmt.Sprintf(`%s="%s?v=%s"`, g[1], g[2], hex.EncodeToString(sum[:6])))
 	})
 }
@@ -1075,6 +1160,7 @@ func versionedPage(page []byte) []byte {
 // gw is the gateway this process serves, or nil when another magpie has it
 // (for now: see startBackend).
 func Handler(w Windows, gw *gateway.Server) http.Handler {
+	addAssetTypes()
 	if gw != nil {
 		served.Store(gw)
 	}
@@ -1084,9 +1170,16 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		webPage.Store(true)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/", devPage(revalidated(http.FileServer(http.FS(staticFS())))))
+	page := devPage(revalidated(http.FileServer(http.FS(staticFS()))))
+	mux.Handle("/", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if warmsSessions(r) {
+			warmSessions()
+		}
+		page.ServeHTTP(rw, r)
+	}))
 	devRoutes(mux)
 	pluginPageRoutes(mux, isWeb(w))
+	feedbackRoutes(mux)
 	// boot.js hands the page the saved language and theme before it paints:
 	// they came only with the settings, so the tabs showed English first
 	mux.HandleFunc("GET /boot.js", func(rw http.ResponseWriter, r *http.Request) {
@@ -1098,6 +1191,16 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// once another answers in its place (visamzh on X), as after its
 		// own restart to update (backAsNew)
 		boot["version"] = Version
+		// and the clock the system shows, 12 or 24 hours, which no webview
+		// tells the page (iXerol on X); a browser tab keeps its own
+		if !isWeb(w) {
+			if hc := systemHourCycle(); hc != "" {
+				boot["hourCycle"] = hc
+			}
+			if loc := systemLocale(); loc != "" {
+				boot["locale"] = loc
+			}
+		}
 		if s.Colorblind {
 			boot["colorblind"] = true
 		}
@@ -1220,6 +1323,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			fail(rw, err)
 			return
 		}
+		if !wired {
+			resumeOnWire(a)
+		}
 		s := state()
 		if a.Notice != nil && (!f.Live || !wired && a.Wired()) {
 			s.Notice = a.Notice()
@@ -1311,6 +1417,24 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		home, _ := os.UserHomeDir()
 		if _, err := agent.SetDesktopIsolated(home, in.On); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, state())
+	})
+	// an agent's own telemetry off, or back (agent/telemetry.go)
+	mux.HandleFunc("POST /api/agents/telemetry/{id}", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Off bool }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		a, err := agent.Find(r.PathValue("id"))
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := a.SetTelemetry(in.Off); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1410,6 +1534,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			var c agent.Connection
 			c, err = a.ConnectHow()
 			how = &c
+			if err == nil {
+				resumeOnWire(a)
+			}
 		case "disconnect":
 			err = a.Disconnect()
 		default:
@@ -1487,6 +1614,10 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	sessionRoutes(mux, w)
 	sessionManageRoutes(mux, w)
 	backupRoutes(mux, w)
+	dataFolderRoutes(mux, w)
+	mtlsRoutes(mux, w)
+	joinRoutes(mux)
+	httpsRoutes(mux, w)
 	uninstallRoutes(mux, w)
 	archiveRoutes(mux)
 	libraryRoutes(mux, w)
@@ -1495,9 +1626,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	cliBehindRoutes(mux)
 	configRepairRoutes(mux, !isWeb(w))
 	gatewayFixRoutes(mux)
+	gatewayPauseRoutes(mux)
 	gatewayModeRoutes(mux)
 	if !isWeb(w) {
 		appPageRoutes(mux)
+		remoteRoutes(mux, w)
 	}
 	privacyModelRoutes(mux)
 	maskingRoutes(mux)
@@ -1532,7 +1665,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		// is in (yi_time)
 		if (!slices.Equal(settings.Load().TrayUsages, cur.TrayUsages) || in.TrayUsageEvery != cur.TrayUsageEvery ||
 			in.TrayNoLogos != cur.TrayNoLogos || in.TrayNoBird != cur.TrayNoBird || in.TrayNoNumber != cur.TrayNoNumber || in.TrayPace != cur.TrayPace ||
-			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang) && onTrayUsage != nil {
+			in.TrayNoCost != cur.TrayNoCost || !maps.EqualFunc(in.TrayWindows, cur.TrayWindows, slices.Equal) || in.Lang != cur.Lang || in.ChineseUnits != cur.ChineseUnits) && onTrayUsage != nil {
 			onTrayUsage()
 		}
 		// an alert turned on or moved is looked at now, the Mac asked for its
@@ -1635,6 +1768,31 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// every agent's own telemetry off, over each agent's row (OipsAnthony
+	// on X): saved, the agents' files follow at once; an agent that
+	// couldn't is named in refused, the switch saved all the same
+	mux.HandleFunc("POST /api/settings/agent-telemetry", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Off bool `json:"off"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		var out struct {
+			settingsJSON
+			Refused string `json:"refused,omitempty"`
+		}
+		if err := agent.SetTelemetryAll(in.Off); err != nil {
+			if settings.Load().AgentTelemetryOff != in.Off {
+				fail(rw, err)
+				return
+			}
+			out.Refused = err.Error()
+		}
+		out.settingsJSON = settingsState()
+		writeJSON(rw, out)
+	})
 	// whether agents' sign-ins are read and served as subscriptions
 	// (#1535): saved, the accounts read before are forgotten at once
 	mux.HandleFunc("POST /api/settings/account-discovery", func(rw http.ResponseWriter, r *http.Request) {
@@ -1666,6 +1824,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		s := settings.Load()
 		s.UpdateSkip = strings.TrimSpace(in.Version)
+		if s.UpdateSkip != "" {
+			updates.quietAgain() // a dismissal holds for the quiet, not only the next release
+		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return
@@ -1802,6 +1963,34 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, settingsState())
 	})
+	// the longest context window any model is told (settings.ContextCap):
+	// At 0 takes the cap away; a model's or provider's own window stays
+	mux.HandleFunc("POST /api/settings/context-cap", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ At int }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetContextCap(in.At); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// whether that longest context also holds a window the user set
+	// (settings.ContextCapAll)
+	mux.HandleFunc("POST /api/settings/context-cap-mode", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ All bool }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetContextCapAll(in.All); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
 	// an agent's own Long conversations (settings.AgentCompacts): Own
 	// false follows the one for every agent again
 	mux.HandleFunc("POST /api/settings/agent-compact", func(rw http.ResponseWriter, r *http.Request) {
@@ -1819,6 +2008,47 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			c = &settings.AgentCompact{At: in.At, Full: in.Full}
 		}
 		if err := provider.SetAgentCompact(in.Agent, c); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// the windows one agent is told, apart from every other's
+	// (settings.AgentContexts): Contexts replaces them, none takes them away
+	mux.HandleFunc("POST /api/settings/agent-contexts", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Agent    string
+			Contexts map[string]int
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		a, err := agent.Find(in.Agent)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetAgentContexts(a.ListsFor(), in.Contexts); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// an agent's own Provider in model names (settings.AgentSuffix): Mode
+	// "" follows the one for every agent again
+	mux.HandleFunc("POST /api/settings/agent-suffix", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Agent, Mode string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		a, err := agent.Find(in.Agent)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetAgentSuffix(a.ListsFor(), in.Mode); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -1921,6 +2151,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// Settings › Proxy's Test (#2076): the address Cloudflare sees a request
 	// from through the proxy in force, and without it
 	mux.HandleFunc("POST /api/proxy/check", handleProxyCheck)
+	proxyRoutes(mux)
+	mux.HandleFunc("POST /api/pipelines/check", handlePipelineCheck)
 	mux.HandleFunc("POST /api/settings/codex-titles", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct{ Model string }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -1983,6 +2215,48 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			}
 		}
 		if err := provider.SetCodexAutoReview(v); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// the service tier every request of Codex's goes at (JackyFill on X):
+	// "" as Codex asks it, "default" with none, "priority" or "ultrafast"
+	mux.HandleFunc("POST /api/settings/codex-service-tier", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Tier string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetCodexServiceTier(in.Tier); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// the Codex client magpie presents to the ChatGPT backend: "" (Codex
+	// CLI) or "desktop" (ouhthuo on X)
+	mux.HandleFunc("POST /api/settings/codex-client", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Client string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetCodexClient(in.Client); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// what Codex opens in from its Agents row menu: "", "app" or
+	// "terminal" (Yink88564391 on X)
+	mux.HandleFunc("POST /api/settings/codex-open", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Open string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := provider.SetCodexOpen(in.Open); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2358,11 +2632,12 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// not sent stays as it is
 	mux.HandleFunc("POST /api/usage/arrange", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Order        *[]string
-			PanelHidden  *[]string
-			AgentsHidden *[]string
-			CardsHidden  *[]string
-			Count        *struct{ Client, As string }
+			Order         *[]string
+			PanelHidden   *[]string
+			AgentsHidden  *[]string
+			CardsHidden   *[]string
+			WindowsHidden *[]string
+			Count         *struct{ Client, As string }
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -2388,6 +2663,9 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		if in.CardsHidden != nil {
 			s.UsageCardsHidden = *in.CardsHidden
+		}
+		if in.WindowsHidden != nil {
+			s.UsageWindowsHidden = *in.WindowsHidden
 		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
@@ -2605,6 +2883,56 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		writeJSON(rw, settingsState())
+	})
+	// the Bark target every alert also goes to, and the time of the daily
+	// summary (EV_John_Liu on X). A field left out stays; the key, "" takes it
+	// away. The key is written and never read back by the page.
+	mux.HandleFunc("POST /api/settings/bark", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Server *string `json:"server"`
+			Key    *string `json:"key"`
+			Daily  *string `json:"daily"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		s := settings.Load()
+		if in.Server != nil {
+			s.BarkServer = *in.Server
+		}
+		if in.Key != nil {
+			s.BarkKey = *in.Key
+		}
+		if in.Daily != nil {
+			s.BarkDaily = *in.Daily
+		}
+		if err := settings.CheckBark(s.BarkServer, s.BarkKey, s.BarkDaily); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := settings.Save(s); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, settingsState())
+	})
+	// a push to the saved Bark target, to see that it arrives
+	mux.HandleFunc("POST /api/bark/test", func(rw http.ResponseWriter, r *http.Request) {
+		s := settings.Load()
+		t := barkTarget(s)
+		if !t.On() {
+			fail(rw, fmt.Errorf("no Bark device key is set"))
+			return
+		}
+		title, body := barkTestText(trayLang(s.Lang, systemLang))
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		if err := bark.Push(ctx, t, title, body); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]bool{"ok": true})
 	})
 	// the GitHub download mirror updates come through (#893), the same
 	// setting `magpie update mirror` sets: a full https:// prefix, or ""
@@ -2833,6 +3161,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	})
 	agentModelsAPI(mux)
 	speedsAPI(mux)
+	modelPriceRoutes(mux)
 	devListen(mux)
 	return noFramedAPI(held(mux))
 }
@@ -2878,9 +3207,9 @@ func held(h http.Handler) http.Handler {
 			// 5x the CPU.
 			defer tightenGC()()
 		}
-		if !(api && r.Method == http.MethodGet) {
+		if !(api && r.Method == http.MethodGet) && r.URL.Path != "/api/update/using" {
 			// anything that may have written drops what was held, once it
-			// has answered with it
+			// has answered with it (a page's word of input writes nothing)
 			defer provider.Changed()
 		}
 		h.ServeHTTP(rw, r)
@@ -2900,6 +3229,7 @@ func state() stateJSON {
 	s.ConfigBlocked = configBlocked()
 	if served.Load() == nil {
 		s.GatewayOther = gatewayOther.Load()
+		s.GatewayHeld = gateway.LastHeld()
 	}
 	for _, e := range provider.Served() {
 		if e.Group == "" {
@@ -2946,6 +3276,24 @@ func state() stateJSON {
 				aj.Isolated = &iso
 			}
 		}
+		if a.Telemetry != nil {
+			// Settings › Privacy's switch for every agent reaches one
+			// found since as it is seen
+			all := agent.TelemetryAllOff()
+			var allErr error
+			if all {
+				allErr = agent.KeepTelemetryOff(a)
+			}
+			st, err := a.Telemetry.Get()
+			st.All = all
+			if allErr != nil && err == nil {
+				st.AllError = allErr.Error()
+			}
+			if err != nil {
+				st.Error = err.Error()
+			}
+			aj.Telemetry = &st
+		}
 		if a.Import != nil {
 			aj.Import = a.Import()
 			if a.Added != nil {
@@ -2964,6 +3312,7 @@ func state() stateJSON {
 		// as agentCommand makes it, Launch asked once
 		aj.Command = agentLine(a, aj.Launch, runtime.GOOS)
 		aj.Terminal = terminalHere() && aj.Command != ""
+		aj.OpenApp = a.ID == "codex" && codexOpensApp()
 		if a.Native != nil {
 			native := a.Native.Read()
 			aj.Native = &native
@@ -2997,9 +3346,10 @@ type signInOpened struct {
 
 // openSignIn opens an account sign-in's page, unless the user keeps those
 // pages to a browser of their own (settings.SignInLinkOnly), and says how
-// it went for signInOpened.
-func openSignIn(w Windows, st provider.SignInState) signInOpened {
-	if settings.Load().SignInLinkOnly {
+// it went for signInOpened. linkOnly is this sign-in alone kept to its link
+// (the window's "Sign in on another computer"), whatever the setting.
+func openSignIn(w Windows, st provider.SignInState, linkOnly bool) signInOpened {
+	if linkOnly || settings.Load().SignInLinkOnly {
 		return signInOpened{SignInState: st, LinkOnly: true}
 	}
 	var failed string
@@ -3286,6 +3636,11 @@ func fail(rw http.ResponseWriter, err error) {
 	if errors.As(err, &bun) {
 		out["code"], out["bun"], out["bunWhy"] = "bun_unstartable", bun.Bun, bun.Why
 		out["said"] = bunSaid[bun.Why]
+	}
+	// a proxy's web page inside the text: its title, said in the reader's
+	// language, never the markup
+	if what, ok := webPageSaid(out["error"]); ok && out["said"] == "" {
+		out["error"], out["said"], out["what"] = "A proxy in front of magpie answered, not magpie ("+what+")", "A proxy in front of magpie answered, not magpie ({what})", what
 	}
 	_ = json.NewEncoder(rw).Encode(out)
 }

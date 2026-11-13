@@ -32,13 +32,29 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux release-darwin clean dev dev-once
+.PHONY: assets-pack build-release build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once
+
+# A release build embeds the UI's files as one zip instead of the tree
+# (internal/gui/assets_packed.go): a Windows or Linux download is the raw
+# binary, and the scripts, styles and svgs are a quarter of their size packed.
+# The zip is not kept in git; every release target makes it first.
+assets-pack:
+	@go run ./build/assetpack internal/gui/assets internal/gui/assets.zip
+
+# Every build but the test runs takes Go's runtime with the macOS page
+# release of build/darwin/footprint-overlay.sh: with Go's own, heap Go
+# gave back stayed in Activity Monitor's Memory on macOS 27. It replaces
+# a darwin-only file, so other systems' builds are the same with it.
+OVERLAY = F=$$(sh build/darwin/footprint-overlay.sh .overlay) || exit 1;
 
 build:
-	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
+	$(OVERLAY) go build $$F -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
 
 cli:
-	CGO_ENABLED=0 go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o magpie .
+	$(OVERLAY) CGO_ENABLED=0 go build $$F -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o magpie .
+
+build-release: assets-pack
+	$(OVERLAY) go build $$F -tags "$(TAGS) packedassets" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
 
 install:
 	go install -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" .
@@ -57,7 +73,7 @@ test-ui:
 	node --test --test-concurrency=$(UI_TEST_CONCURRENCY) $(UI_TESTS)
 
 # macOS bundle: menu bar app with no Dock icon (LSUIElement).
-app: build
+app: build-release
 	@rm -rf magpie.app
 	@mkdir -p magpie.app/Contents/MacOS magpie.app/Contents/Resources
 	@cp magpie magpie.app/Contents/MacOS/magpie
@@ -66,35 +82,6 @@ app: build
 	@cp THIRD_PARTY_NOTICES magpie.app/Contents/Resources/THIRD_PARTY_NOTICES
 	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > magpie.app/Contents/Info.plist
 	@echo "  magpie.app"
-
-# macOS desktop release: bundle, ad-hoc sign, a zip for AppAsset(), and a
-# dmg for manual installs. Ad-hoc signing verifies integrity only; it does
-# not identify a developer or team, and the app is not notarized, so first
-# launch may need Gatekeeper approval.
-DARWINVER = $(shell echo $(VERSION) | sed -E 's/^v//; s/[^0-9.].*//')
-release-darwin:
-	@rm -rf dist/magpie.app
-	@mkdir -p dist/magpie.app/Contents/MacOS dist/magpie.app/Contents/Resources
-	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie.app/Contents/MacOS/magpie .
-	@cp build/darwin/magpie.icns dist/magpie.app/Contents/Resources/magpie.icns
-	@cp build/darwin/Assets.car dist/magpie.app/Contents/Resources/Assets.car
-	@sed 's/@VERSION@/$(or $(DARWINVER),0.0.0)/' build/darwin/Info.plist > dist/magpie.app/Contents/Info.plist
-	@codesign --force --deep --sign - --timestamp=none dist/magpie.app
-	@codesign --verify --deep --strict dist/magpie.app
-	@ditto -c -k --sequesterRsrc --keepParent dist/magpie.app dist/magpie-darwin-$(shell go env GOARCH).zip
-	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt && mkdir -p dist/magpie-mnt
-	@hdiutil create -size 4g -fs HFS+ -volname "magpie $(or $(DARWINVER),0.0.0)" -ov -type UDIF dist/magpie-rw.dmg
-	@hdiutil attach -nobrowse -readwrite -mountpoint dist/magpie-mnt dist/magpie-rw.dmg
-	@ditto dist/magpie.app dist/magpie-mnt/magpie.app
-	@codesign --verify --deep --strict dist/magpie-mnt/magpie.app
-	@ln -s /Applications dist/magpie-mnt/Applications
-	@cp build/darwin/magpie.icns dist/magpie-mnt/.VolumeIcon.icns
-	@SetFile -c icnC -a C dist/magpie-mnt || echo "  (no SetFile: the dmg keeps the plain disk icon)"
-	@sync
-	@for i in 1 2 3 4 5; do hdiutil detach dist/magpie-mnt 2>/dev/null && exit 0; sleep 2; done; hdiutil detach -force dist/magpie-mnt
-	@rm -f dist/magpie-darwin-$(shell go env GOARCH).dmg
-	@hdiutil convert dist/magpie-rw.dmg -format UDZO -o dist/magpie-darwin-$(shell go env GOARCH).dmg
-	@rm -rf dist/magpie-rw.dmg dist/magpie-mnt
 
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png
@@ -122,17 +109,17 @@ icons:
 		--minimum-deployment-target 11.0 --app-icon AppIcon --output-partial-info-plist build/darwin/actool/partial.plist >/dev/null
 	@mv build/darwin/actool/Assets.car build/darwin/Assets.car && rm -rf build/darwin/actool
 
-release: clean build
+release: clean build-release
 	@mkdir -p dist
 	@cp magpie dist/magpie-$(shell go env GOOS)-$(shell go env GOARCH)
 	@$(MAKE) --no-print-directory release-cli
 
-release-cli:
+release-cli: assets-pack
 	@mkdir -p dist
-	@for t in $(TARGETS); do \
+	@$(OVERLAY) for t in $(TARGETS); do \
 		os=$${t%/*}; arch=$${t#*/}; ext=""; [ $$os = windows ] && ext=.exe; \
 		echo "  $$os/$$arch (cli)"; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-cli-$$os-$$arch$$ext . || exit 1; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build $$F -tags "nogui packedassets" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-cli-$$os-$$arch$$ext . || exit 1; \
 	done
 
 # The desktop app for Windows: the system WebView2 needs no cgo, so both
@@ -145,25 +132,25 @@ release-cli:
 # commit in them every release wrote a new one though the launcher was the
 # same (TestLauncherSameAtEveryCommit).
 WINVER = $(shell echo $(VERSION) | sed -E 's/^v//; s/[^0-9.].*//')
-release-windows:
+release-windows: assets-pack
 	@mkdir -p dist
 	@go run github.com/tc-hib/go-winres@v0.3.3 make --in build/windows/winres.json --arch amd64,arm64 --out rsrc \
 		--file-version "$(or $(WINVER),0.0.0)" --product-version "$(or $(WINVER),0.0.0)"
 	@for arch in amd64 arm64; do \
 		echo "  windows/$$arch (app)"; \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -trimpath -buildvcs=false -ldflags="-s -w" -o internal/update/launcher-$$arch.com ./internal/update/launcher || exit 1; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -tags production,comlauncher -trimpath -ldflags="$(LDFLAGS) -H windowsgui" -o dist/magpie-windows-$$arch.exe . || exit 1; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -tags production,comlauncher,packedassets -trimpath -ldflags="$(LDFLAGS) -H windowsgui" -o dist/magpie-windows-$$arch.exe . || exit 1; \
 	done; rm -f rsrc_windows_*.syso internal/update/launcher-*.com
 
 # The desktop app for Linux links GTK 3 and WebKitGTK 4.1 through cgo, so it
 # is built natively, one arch per machine.
-release-linux:
+release-linux: assets-pack
 	@mkdir -p dist
 	@echo "  linux/$(shell go env GOARCH) (app)"
-	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-linux-$(shell go env GOARCH) .
+	@go build -tags "$(TAGS) packedassets" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-linux-$(shell go env GOARCH) .
 
 clean:
-	rm -rf magpie magpie.exe magpie.app dist rsrc_windows_*.syso internal/update/launcher-*.com
+	rm -rf magpie magpie.exe magpie.app dist .overlay internal/gui/assets.zip rsrc_windows_*.syso internal/update/launcher-*.com
 
 # Development: the UI is served from internal/gui/assets and the window
 # reloads itself when a file there is saved. With fswatch installed, the

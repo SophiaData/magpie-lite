@@ -252,14 +252,14 @@ var presets = []PresetDef{
 		Website: "https://platform.minimaxi.com", KeysURL: "https://platform.minimaxi.com/user-center/basic-information/interface-key"},
 	// a Step Plan is served at its own endpoints (step_plan/…), its key
 	// refused at the pay-as-you-go ones
-	{ID: "stepfun", Name: "StepFun", Icon: "stepfun-color", Kind: KindVendor, Catalog: "stepfun-ai-step-plan, stepfun-ai",
+	{ID: "stepfun", Name: "StepFun", Icon: "stepfun", Kind: KindVendor, Catalog: "stepfun-ai-step-plan, stepfun-ai",
 		Chat: "https://api.stepfun.ai/step_plan/v1", Anthropic: "https://api.stepfun.ai/step_plan",
 		Website: "https://platform.stepfun.ai", KeysURL: "https://platform.stepfun.ai/interface-key",
 		RegionLabel: "Plan", KeyPlans: true, Regions: []Region{
 			{ID: "plan", Name: "Step Plan", Chat: "https://api.stepfun.ai/step_plan/v1", Anthropic: "https://api.stepfun.ai/step_plan"},
 			{ID: "api", Name: "Pay as you go", Chat: "https://api.stepfun.ai/v1", Anthropic: "https://api.stepfun.ai"},
 		}},
-	{ID: "stepfun-cn", Name: "StepFun (China)", Icon: "stepfun-color", Kind: KindVendor, Catalog: "stepfun-step-plan, stepfun",
+	{ID: "stepfun-cn", Name: "StepFun (China)", Icon: "stepfun", Kind: KindVendor, Catalog: "stepfun-step-plan, stepfun",
 		Chat: "https://api.stepfun.com/step_plan/v1", Anthropic: "https://api.stepfun.com/step_plan",
 		Website: "https://platform.stepfun.com", KeysURL: "https://platform.stepfun.com/interface-key",
 		RegionLabel: "Plan", KeyPlans: true, Regions: []Region{
@@ -412,8 +412,10 @@ var presets = []PresetDef{
 	// token-plan.maas.qianwenaiapi.com, and on Alibaba Cloud Bailian
 	// (bailian.console.aliyun.com) at token-plan.cn-beijing.maas.aliyuncs.com
 	// (#1506). The models given are the plans' text models as their
-	// overviews list them, for when the host gives no list. Neither has an
-	// API for the plan's credits: its console's subscription page shows them.
+	// overviews list them, for when the host gives no list. Only the
+	// two at aliyuncs.com have a way to read the plan's credits, with the
+	// account's AccessKey (alibaba_usage.go); the Qwen AI platform's console
+	// takes a browser sign-in (#5829).
 	{ID: "qwen-token-plan", Name: "Qwen Token Plan", Short: "Qwen Plan", Icon: "qwen-color", Kind: KindVendor,
 		Chat: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1", Anthropic: "https://token-plan.maas.qianwenaiapi.com/apps/anthropic",
 		Note:    "Qwen AI platform · subscription",
@@ -428,6 +430,14 @@ var presets = []PresetDef{
 		Decide:  "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
 		Note:    "Alibaba Cloud Bailian · subscription",
 		Website: "https://help.aliyun.com/zh/model-studio/token-plan-overview", KeysURL: "https://bailian.console.aliyun.com/cn-beijing/subscription/token-plan/personal",
+		Models: alibabaPlanModels},
+	// Alibaba Cloud's international Token Plan, the same plan at the
+	// Singapore host (sk-sp- keys, #2940). Its quota is read like Bailian's,
+	// with the account's AccessKey (alibaba_usage.go).
+	{ID: "alibaba-token-plan", Name: "Alibaba Cloud Token Plan", Short: "Alibaba Plan", Icon: "bailian-color", Kind: KindVendor,
+		Chat: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", Anthropic: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic",
+		Note:    "Alibaba Cloud Model Studio · subscription",
+		Website: "https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-quick-start", KeysURL: "https://modelstudio.console.alibabacloud.com/ap-southeast-1/?tab=globalset#/efm/token_plan",
 		Models: alibabaPlanModels},
 	// Qwen Cloud (qwencloud.com) is Alibaba's international Qwen platform,
 	// on keys of its own made at home.qwencloud.com, at
@@ -548,8 +558,23 @@ var presets = []PresetDef{
 		Website: "https://openrouter.ai", KeysURL: "https://openrouter.ai/keys",
 		// app attribution, for OpenRouter's rankings and analytics
 		HeaderHints: []string{"HTTP-Referer", "X-OpenRouter-Title"}},
+	// Vercel's AI Gateway (Archie627 on X): one key for every maker's
+	// models, as provider/model ids, on OpenAI's chat completions and
+	// Responses at /v1 and Anthropic's Messages at the root, each serving
+	// every model (vercel.com/docs/ai-gateway/sdks-and-apis); its /v1/models
+	// says each row's type (catalog.VercelGateway)
+	{ID: "vercel", Name: "Vercel AI Gateway", Icon: "vercel", Kind: KindRelay, Catalog: "vercel",
+		Chat: "https://ai-gateway.vercel.sh/v1", Responses: "https://ai-gateway.vercel.sh/v1", Anthropic: "https://ai-gateway.vercel.sh",
+		Website: "https://vercel.com/docs/ai-gateway", KeysURL: "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys"},
+	// GMI Cloud (aiandcloud on X): OpenAI-compatible chat completions at
+	// api.gmi-serving.com/v1, its model list at /v1/models, the key as Bearer
+	// (docs.gmicloud.ai quickstart and LLM API reference). Its docs name no
+	// Responses or Messages endpoint, so only Chat is set
+	{ID: "gmicloud", Name: "GMI Cloud", Icon: "gmicloud", Kind: KindRelay,
+		Chat:    "https://api.gmi-serving.com/v1",
+		Website: "https://www.gmicloud.ai", KeysURL: "https://console.gmicloud.ai"},
 	{ID: "opencode-go", Name: "OpenCode Go", Icon: "opencode", Kind: KindRelay, Catalog: "opencode-go",
-		Chat: "https://opencode.ai/zen/go/v1", Responses: "https://opencode.ai/zen/go/v1", Anthropic: "https://opencode.ai/zen/go",
+		Chat: OpenCodeGoChat, Responses: OpenCodeGoChat, Anthropic: OpenCodeGoAnthropic,
 		Note:    "open coding models, $10/month",
 		Website: "https://opencode.ai/docs/go", KeysURL: "https://opencode.ai/auth"},
 	// Cline's plan for open models, at the Cline API with a Cline key: the
@@ -594,6 +619,22 @@ var presets = []PresetDef{
 	{ID: "fireworks", Name: "Fireworks", Icon: "fireworks-color", Kind: KindRelay, Catalog: "fireworks-ai",
 		Chat:    "https://api.fireworks.ai/inference/v1",
 		Website: "https://fireworks.ai", KeysURL: "https://app.fireworks.ai/settings/users/api-keys"},
+	// Fireworks Nexus (CNSA0422 on X): an account and plan of its own at
+	// nexus.fireworks.ai, with keys made there, on the platform's
+	// /inference endpoints, which speak chat completions, Responses and
+	// messages alike (docs.fireworks.ai/nexus/apis-and-sdks). Pro and Team
+	// take only `auto`, Nexus Auto, and refuse an open model named directly
+	// with a 403 (nexus/open-models), so `auto` is the list; an Enterprise
+	// account's open models are typed in. Nexus Auto reaches Claude and GPT
+	// with the user's own keys in the two headers, or with Provider Keys
+	// set up on the account.
+	{ID: "fireworks-nexus", Name: "Fireworks Nexus", Short: "Nexus", Icon: "fireworks-color", Kind: KindRelay,
+		Chat: "https://api.fireworks.ai/inference/v1", Responses: "https://api.fireworks.ai/inference/v1", Anthropic: "https://api.fireworks.ai/inference",
+		Note:    "Nexus Auto · Pro, Team, Enterprise",
+		Website: "https://docs.fireworks.ai/nexus", KeysURL: "https://nexus.fireworks.ai/settings/api-keys",
+		NoList:      true,
+		Models:      []string{"auto"},
+		HeaderHints: []string{"x-anthropic-api-key", "x-openai-api-key"}},
 	{ID: "siliconflow", Name: "SiliconFlow", Icon: "siliconcloud-color", Kind: KindRelay, Catalog: "siliconflow",
 		Chat:    "https://api.siliconflow.cn/v1",
 		Website: "https://cloud.siliconflow.cn", KeysURL: "https://cloud.siliconflow.cn/account/ak",
@@ -700,6 +741,14 @@ var presets = []PresetDef{
 		Chat: "http://localhost:8000/v1", Responses: "http://localhost:8000/v1", Anthropic: "http://localhost:8000",
 		Decide: "http://localhost:8000/v1",
 		Note:   "local server, port 8000 by default", Website: "https://omlx.ai"},
+	// GPUStack (github.com/gpustack/gpustack), a self-hosted model server:
+	// its OpenAI-compatible API is at <server>/v1 (/v1-openai is the legacy
+	// path), a Bearer API key from its UI, and GET /v1/models lists the
+	// ready models the key may use. The server is the user's own: port 80 by
+	// default, on this machine or another.
+	{ID: GPUStackPreset, Name: "GPUStack", Icon: "gpustack", Kind: KindLocal,
+		Chat: "http://localhost/v1",
+		Note: "your own server and API key", Website: "https://github.com/gpustack/gpustack"},
 	// its decision models (Clef, Clef-Flash, Kev, Laya, D1), served at
 	// /v1/systemone, are marked by capabilities in /v1/models (mlxserve_decide.go)
 	{ID: MLXServePreset, Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
@@ -923,10 +972,22 @@ func (p *Provider) atRegionOf(pr *PresetDef, r Region) {
 }
 
 // IconForCatalog names the logo of the vendor behind a models.dev
-// provider id, or "" when no preset covers it.
+// provider id, or "" when no preset covers it. A preset names several
+// catalogs ("stepfun-ai-step-plan, stepfun-ai"), so an id is also found in
+// that list; a preset whose catalog is exactly the id comes first, so
+// Azure's "azure, openai" never gives OpenAI's models Azure's logo.
 func IconForCatalog(catalogID string) string {
+	if catalogID == "" {
+		return ""
+	}
 	for _, p := range presets {
 		if p.Catalog == catalogID || slices.ContainsFunc(p.Regions, func(r Region) bool { return r.Catalog == catalogID }) {
+			return p.Icon
+		}
+	}
+	for _, p := range presets {
+		if slices.Contains(Provider{Catalog: p.Catalog}.Catalogs(), catalogID) ||
+			slices.ContainsFunc(p.Regions, func(r Region) bool { return slices.Contains(Provider{Catalog: r.Catalog}.Catalogs(), catalogID) }) {
 			return p.Icon
 		}
 	}

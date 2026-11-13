@@ -114,9 +114,19 @@ func DrawerMissing() string { return drawerMissing(settings.Load().ImageGen) }
 // drawerMissing is v, an Image generation pick, when magpie can't draw
 // with it: pickedMissing's, and a routing group ("group/<id>", 7up6666 on
 // X) none of whose members draws any more.
+// DrawerMissingOf is drawerMissing: what Settings checks an Image
+// generation pick with before it saves it.
+func DrawerMissingOf(v string) string { return drawerMissing(v) }
+
 func drawerMissing(v string) string {
 	if !provider.IsGroupRef(v) {
-		return pickedMissing(v)
+		if v == "" || v == "off" {
+			return ""
+		}
+		if _, _, ok := resolveDrawing(v); ok {
+			return ""
+		}
+		return v
 	}
 	// a group of image models only is no model agents are offered, so
 	// Resolve doesn't take it: it is missing when none of it draws
@@ -172,6 +182,15 @@ func resolveDrawing(id string) (provider.Provider, string, bool) {
 		return provider.Resolve(id)
 	}
 	if strings.Contains(id, "/") {
+		if p, m, ok := provider.Resolve(id); ok {
+			return p, m, true
+		}
+		// an image model of a key kept for them: Select none serves no
+		// chat model, yet the key still draws (netube99 on X, minimax-cn)
+		pid, model, _ := strings.Cut(id, "/")
+		if p, err := provider.Find(pid); err == nil && p.On() && !p.DecideOnly() && drawsModel(*p, model) {
+			return *p, model, true
+		}
 		return provider.Resolve(id)
 	}
 	for _, p := range provider.All() {
@@ -224,6 +243,8 @@ func drawsFamily(p provider.Provider, id string) bool {
 		return strings.HasPrefix(id, grokDrawerFamily)
 	case drawsCodex(p):
 		return strings.HasPrefix(id, codexDrawerFamily)
+	case drawsMuse(p):
+		return strings.HasPrefix(id, "muse-image")
 	case p.Account == nil && p.Base(provider.Responses) != "" && strings.HasPrefix(id, codexDrawerFamily):
 		return slices.ContainsFunc(Drawers(p), func(m catalog.Model) bool {
 			return strings.HasPrefix(m.ID[strings.LastIndexByte(m.ID, '/')+1:], codexDrawerFamily)
@@ -277,7 +298,7 @@ func ListedDrawer(ref string) string {
 // an account's own list of models (#474), picked in the editor from the
 // chat models, can't name them, so it never bars one (heyiwei5 on X).
 func listsCantName(p provider.Provider) bool {
-	return drawsCodex(p) || drawsGrok(p) || drawsWorkBuddy(p)
+	return drawsCodex(p) || drawsGrok(p) || drawsMuse(p) || drawsWorkBuddy(p)
 }
 
 // codexDrawer is the image model Codex CLI asks a ChatGPT account for, the
@@ -306,6 +327,19 @@ func drawsCopilot(p provider.Provider) bool {
 	return p.Account != nil && p.Account.Agent == "copilot"
 }
 
+// museDrawer is Meta's image model (Muse Image), which the Muse Code
+// subscription's plans include and which draws on the Responses API, as
+// Meta's image generation page shows: model muse-image-1.0, the picture in
+// the answer's image_generation_call.
+const museDrawer = "muse-image-1.0"
+
+// drawsMuse is whether p is a Muse (Meta) subscription, a plugin's. The
+// plugin signs POST /responses only, so it draws on that, not on the
+// images endpoints.
+func drawsMuse(p provider.Provider) bool {
+	return p.Account != nil && p.PluginProvider() == "muse" && p.Base(provider.Responses) != ""
+}
+
 // drawsCodex is whether p is a ChatGPT account, which draws at its Codex
 // backend's images API.
 func drawsCodex(p provider.Provider) bool {
@@ -326,6 +360,9 @@ func Drawers(p provider.Provider) []catalog.Model { return DrawersOf(p, p.Availa
 func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Model {
 	if drawsWorkBuddy(p) {
 		return wbDrawers(p)
+	}
+	if drawsMuse(p) {
+		return []catalog.Model{{ID: museDrawer, Name: "Muse Image", Provider: p.ID}}
 	}
 	if drawsCodex(p) || drawsGrok(p) {
 		out := slices.Clone(codexDrawers)
@@ -391,6 +428,10 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 		return nil
 	}
 	out := p.PlanDrawers()
+	if filmsMiniMax(p) {
+		// a MiniMax key's image-01 models, which no list names
+		out = append(out, minimaxDrawers(p)...)
+	}
 	have := make(map[string]bool, len(out))
 	for _, m := range out {
 		have[m.ID] = true
@@ -499,8 +540,8 @@ func AutoDrawer() string {
 			}
 			c := cand{ref: p.ID + "/" + m.ID, released: m.Released, cost: 1e9}
 			switch {
-			case drawsCodex(p), drawsGrok(p):
-				c.cost, c.priced = 0, true // a ChatGPT or Grok plan's images come with it
+			case drawsCodex(p), drawsGrok(p), drawsMuse(p):
+				c.cost, c.priced = 0, true // a ChatGPT, Grok or Muse plan's images come with it
 			case m.Price != nil:
 				c.cost, c.priced = m.Price.Input+m.Price.Output, true
 			}
@@ -1140,6 +1181,9 @@ func viaFor(p provider.Provider, model string) drawVia {
 		// another magpie's images API asks the model's vendor the way
 		// that model draws there
 		return viaImages
+	case drawsMiniMax(p, model):
+		// MiniMax's image_generation, which drawImages asks (rocbomb123 on X)
+		return viaImages
 	case isGoogle(p) && strings.Contains(strings.ToLower(model), "gemini"):
 		return viaGemini
 	case p.ModelKind(model) == provider.KindImage:
@@ -1340,6 +1384,9 @@ func (s *Server) draw(ctx context.Context, p provider.Provider, model string, d 
 	ctx = provider.WithModel(ctx, p.ID, model)
 	if drawsWorkBuddy(p) {
 		return s.drawWorkBuddy(ctx, p, model, d)
+	}
+	if drawsMuse(p) {
+		return s.drawMuse(ctx, p, model, d)
 	}
 	if drawsCodex(p) || drawsGrok(p) {
 		return s.drawImages(ctx, p, model, d)
@@ -1575,6 +1622,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	}
 	if dashScopeDraws(p, model) {
 		return s.drawDashScope(ctx, p, model, d)
+	}
+	if drawsMiniMax(p, model) {
+		return s.drawMiniMax(ctx, p, model, d)
 	}
 	base := strings.TrimRight(p.Base(provider.Chat), "/")
 	if base == "" {

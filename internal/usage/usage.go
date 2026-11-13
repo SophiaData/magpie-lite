@@ -161,7 +161,12 @@ type Record struct {
 	RequestID string `json:"rid,omitempty"`
 	// ResponseID is the response object ID actually sent to the client.
 	ResponseID string `json:"response_id,omitempty"`
-	Endpoint   string `json:"ep,omitempty"`
+	// MessageID is the id the agent's own session file gives the call's
+	// message (Claude Code's msg_…), on a call read from such a file. Not
+	// persisted: it is read back with the file, and told by the request
+	// feed (FeedOriginals).
+	MessageID string `json:"-"`
+	Endpoint  string `json:"ep,omitempty"`
 	// Stop is why the upstream said its reply ended, in its own words
 	// (stop_reason, finish_reason …): "" when it said none, a stream that
 	// just stopped. Told apart by it, a reply that ended too soon is the
@@ -844,6 +849,26 @@ func (t Totals) HitRate() (float64, bool) {
 	return float64(t.CacheRead) / float64(p), true
 }
 
+// HitPct is a hit rate (0 to 1) as a percent, whole unless rounding would
+// say 100% or 0% of a prompt not all or none cached, then to one or two
+// decimals (ZhangXiaof48473 on X); the GUI's hitPct says it the same way.
+func HitPct(h float64) string {
+	s, v := "", 0.0
+	for d := 0; d <= 2; d++ {
+		s = strconv.FormatFloat(100*h, 'f', d, 64)
+		if v, _ = strconv.ParseFloat(s, 64); h <= 0 || h >= 1 || (v > 0 && v < 100) {
+			break
+		}
+	}
+	switch {
+	case h < 1 && v >= 100:
+		s = "99.99"
+	case h > 0 && v <= 0:
+		s = "0.01"
+	}
+	return s + "%"
+}
+
 func (t *Totals) add(r Record, price *catalog.Price) { t.addFrom(Row{Record: r}, price) }
 
 // addFrom is add for a ledger row, whose speed is told as Row.Decode tells
@@ -1033,7 +1058,7 @@ type Summary struct {
 // Summarize caches the four periods over an indexed log snapshot. Callers
 // receive their own result slices, without retaining historical Records.
 func Summarize(p Period) Summary {
-	return indexedSummary(p, Clock())
+	return indexedSummary(p, localNow())
 }
 
 func summarize(p Period, now time.Time, recs []Record) Summary {

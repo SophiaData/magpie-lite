@@ -33,6 +33,21 @@ func save(t *testing.T, text, kind, scope string, tags ...string) *Memory {
 	return m
 }
 
+// A memory is stored with the zone it was saved in, not in UTC: read back
+// as a day, UTC puts 04:30 in Shanghai on the day before (Norethcy on X).
+func TestSaveKeepsTheLocalZone(t *testing.T) {
+	at := fresh(t)
+	*at = time.Date(2026, 11, 11, 4, 30, 0, 0, time.FixedZone("CST", 8*3600))
+	save(t, "Answer in Chinese", Preference, Global)
+	b, err := os.ReadFile(Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"updated": "2026-11-11T04:30:00+08:00"`) && !strings.Contains(string(b), `"updated":"2026-11-11T04:30:00+08:00"`) {
+		t.Fatalf("not saved in the local zone: %s", b)
+	}
+}
+
 func TestSaveKeepsOneOfTheSameText(t *testing.T) {
 	fresh(t)
 	a := save(t, "UI uses no gradients.", Preference, Global, "ui")
@@ -213,5 +228,63 @@ func TestDismissedNotProposedAgain(t *testing.T) {
 	}
 	if len(f.Dismissed) != 2 {
 		t.Fatalf("dismissed: %q", f.Dismissed)
+	}
+}
+
+// Some memories to review, kept or archived at once (RealZeroP27 on X):
+// the ones named change in one write as Edit changes one, an archived
+// candidate is not proposed again, an id no longer there is passed over,
+// and a status that isn't one changes none of them.
+func TestSetStatusOfSome(t *testing.T) {
+	fresh(t)
+	cand := Candidate
+	propose := func(text string) *Memory {
+		t.Helper()
+		k, s := Preference, Global
+		m, _, err := Save(Input{Text: &text, Kind: &k, Scope: &s, Status: &cand}, FromInferred, &Source{Agent: "codex"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	a, b, c, d := propose("Prefers pnpm."), propose("Ships on Fridays."), propose("Answers in Chinese."), propose("Runs tests on mote.")
+	status := func(id string) string {
+		t.Helper()
+		m, err := Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m.Status
+	}
+
+	if n, err := SetStatus(Active, a.ID, b.ID, "m_gone"); err != nil || n != 2 {
+		t.Fatalf("kept %d, %v", n, err)
+	}
+	if status(a.ID) != Active || status(b.ID) != Active || status(c.ID) != Candidate || status(d.ID) != Candidate {
+		t.Fatalf("after keeping two: %s %s %s %s", status(a.ID), status(b.ID), status(c.ID), status(d.ID))
+	}
+	if hits, _ := Search(Query{Text: "pnpm"}); len(hits) != 1 {
+		t.Fatalf("a kept memory isn't searched: %+v", hits)
+	}
+
+	if n, err := SetStatus("gone", c.ID, d.ID); err == nil || n != 0 {
+		t.Fatalf("a bad status: %d, %v", n, err)
+	}
+	if status(c.ID) != Candidate || status(d.ID) != Candidate {
+		t.Fatal("a bad status changed a memory")
+	}
+
+	if n, err := SetStatus(Archived, c.ID, d.ID); err != nil || n != 2 {
+		t.Fatalf("archived %d, %v", n, err)
+	}
+	if status(c.ID) != Archived || status(d.ID) != Archived {
+		t.Fatal("not archived")
+	}
+	if m := propose("answers in chinese"); m != nil {
+		t.Fatalf("archived, then proposed again: %+v", m)
+	}
+
+	if _, err := SetStatus(Active, "m_gone", "m_none"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("none of them there: %v", err)
 	}
 }

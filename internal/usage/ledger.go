@@ -6,6 +6,7 @@ package usage
 
 import (
 	"encoding/csv"
+	"github.com/yetone/magpie/internal/dayzone"
 	"io"
 	"slices"
 	"sort"
@@ -183,6 +184,15 @@ func (f Filter) keeps(r Record) bool {
 	return f.keepsRecord(&r, false, "", "")
 }
 
+// sameGroupModel is whether a record's model is the found routing group
+// a filter names by its kept id (group/auto-…, FilterOf), written by an
+// agent's own session file as auto/<model>. Only such pairs read the
+// providers, not every record a filter passes over.
+func sameGroupModel(recorded, filtered string) bool {
+	return strings.HasPrefix(filtered, provider.GroupPrefix) && strings.HasPrefix(recorded, provider.AutoPrefix) &&
+		provider.CanonicalRef(recorded) == filtered
+}
+
 func (f Filter) keepsRecord(r *Record, codexIdentity bool, subagent, parentAgent string) bool {
 	if f.Day != "" {
 		var day [len(time.DateOnly)]byte
@@ -196,7 +206,7 @@ func (f Filter) keepsRecord(r *Record, codexIdentity bool, subagent, parentAgent
 	if f.RouteID != 0 && r.RouteID != f.RouteID {
 		return false
 	}
-	if f.Model != "" && r.Model != f.Model {
+	if f.Model != "" && r.Model != f.Model && !sameGroupModel(r.Model, f.Model) {
 		return false
 	}
 	if f.Agent != "" && ReportedAs(r.Agent) != f.Agent {
@@ -389,7 +399,7 @@ const UnknownProvider = "session-unknown"
 func logRecord(c sessions.Call) Record {
 	r := Record{Time: c.Time, Agent: c.Agent, Provider: UnknownProvider, Model: c.Model, Served: c.Model, Requested: c.Requested,
 		Input: c.Input, Output: c.Output, CacheRead: c.CacheRead, CacheWrite: c.CacheWrite, CacheWrite1h: c.CacheWrite1h, Reasoning: c.Reasoning, Effort: c.Effort,
-		Millis: c.Millis, TTFT: c.TTFT, Session: c.Session, RequestID: c.RequestID, Error: c.ErrorText, ErrType: c.Error, Subagent: sessions.SubagentOf(c.File), ParentAgent: sessions.SubagentParent(c.File)}
+		Millis: c.Millis, TTFT: c.TTFT, Session: c.Session, RequestID: c.RequestID, MessageID: c.Msg, Error: c.ErrorText, ErrType: c.Error, Subagent: sessions.SubagentOf(c.File), ParentAgent: sessions.SubagentParent(c.File)}
 	if c.Agent == "codex" {
 		r.ResponseID = c.ResponseID
 		r.Compaction = codexCompactionOf(c)
@@ -451,6 +461,7 @@ func ledgerWith(since time.Time, f Filter, recs []Record, logs []sessions.Call) 
 // priced and judged here as this computer's are, and none from until on (a
 // picked range's end, #1492; zero for none).
 func ledgerWithShared(since, until time.Time, f Filter, recs []Record, logs []sessions.Call, others []SharedCall) (rows []Row, sum Totals, agents, providers []string) {
+	logs = ownCalls(logs)
 	matched, pairs, actors, compactions := gatewayMatchesDetails(recs, logs)
 	return ledgerMatched(since, until, f, recs, logs, others, matched, pairs, actors, compactions)
 }
@@ -761,7 +772,7 @@ func timeline(p Period, now, first time.Time) (since time.Time, bucket string, p
 			bucket = "hour"
 			for h := 0; h <= int(d.Hours()); h++ {
 				t := since.Add(time.Duration(h) * time.Hour)
-				pts = append(pts, Point{Label: t.Format("15"), Time: t})
+				pts = append(pts, Point{Label: hourLabel(t), Time: t})
 			}
 		} else {
 			n = int(d.Hours())/24 + 1
@@ -827,7 +838,7 @@ func timeline(p Period, now, first time.Time) (since time.Time, bucket string, p
 		}
 		for h := 0; since.Add(time.Duration(h) * time.Hour).Before(end); h++ {
 			t := since.Add(time.Duration(h) * time.Hour)
-			pts = append(pts, Point{Label: t.Format("15"), Time: t})
+			pts = append(pts, Point{Label: hourLabel(t), Time: t})
 		}
 	case "day":
 		for i := 0; i < n; i++ {
@@ -1077,16 +1088,36 @@ func (r *Row) key(by string) string {
 // keyer is Row.key for many rows, made once for each provider and model:
 // a "modelAt" is a string built of two, which a page of thousands of rows
 // would otherwise build again for each.
-type keyer map[[2]string]string
+type keyer struct {
+	public func(string) string
+	models map[string]string
+	at     map[[2]string]string
+}
+
+func newKeyer() keyer {
+	return keyer{public: provider.PublicRefs(), models: map[string]string{}, at: map[[2]string]string{}}
+}
 
 func (m keyer) key(r *Row, by string) string {
-	if by != "modelAt" {
+	if by != "modelAt" && by != "model" {
 		return r.key(by)
 	}
-	k, ok := m[[2]string{r.Provider, r.Model}]
+	model := r.Model
+	if m.public != nil {
+		var ok bool
+		model, ok = m.models[r.Model]
+		if !ok {
+			model = m.public(r.Model)
+			m.models[r.Model] = model
+		}
+	}
+	if by == "model" {
+		return model
+	}
+	k, ok := m.at[[2]string{r.Provider, r.Model}]
 	if !ok {
-		k = r.key(by)
-		m[[2]string{r.Provider, r.Model}] = k
+		k = ModelAtKey(r.Provider, model)
+		m.at[[2]string{r.Provider, r.Model}] = k
 	}
 	return k
 }
@@ -1105,7 +1136,7 @@ type Share struct {
 func Breakdown(rows []Row, by string) []Share {
 	at := map[string]*Share{}
 	var out []*Share
-	keys := keyer{}
+	keys := newKeyer()
 	for _, r := range rows {
 		if r.IsRejected() {
 			continue
@@ -1202,7 +1233,7 @@ const seriesKeep = 24
 // hour, day or week, for the chart over them. A row is of the point its
 // time falls in; the rows are in any order.
 func LedgerSeries(p Period, rows []Row) (bucket string, pts []SeriesPoint) {
-	return ledgerSeriesAt(p, rows, Clock())
+	return ledgerSeriesAt(p, rows, localNow())
 }
 
 // ledgerSeriesAt is LedgerSeries with the period read at now, the moment the
@@ -1226,7 +1257,7 @@ func ledgerSeriesAt(p Period, rows []Row, now time.Time) (bucket string, pts []S
 		}
 	}
 	kept := map[string]map[string]bool{}
-	keys := keyer{}
+	keys := newKeyer()
 	for _, d := range Dimensions {
 		kept[d] = map[string]bool{}
 		for i, s := range Breakdown(rows, d) {
@@ -1283,4 +1314,10 @@ func NewCoster() func(Record) (float64, bool) {
 		t.add(r, priceOf(r))
 		return t.Cost, t.Unpriced == 0
 	}
+}
+
+// hourLabel is the hour of the real day a point stands for: in a zone whose
+// day starts later (dayzone), its clock is that many hours behind.
+func hourLabel(t time.Time) string {
+	return t.Add(dayzone.Offset(t.Location())).Format("15")
 }

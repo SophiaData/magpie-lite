@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -141,6 +142,9 @@ func mapModelRefs(f *file, to func(string) string) {
 		for k, m := range g.Fast {
 			g.Fast[k] = to(m)
 		}
+		for k, m := range g.Ultra {
+			g.Ultra[k] = to(m)
+		}
 		for k, m := range g.Placed {
 			g.Placed[k] = to(m)
 		}
@@ -264,6 +268,16 @@ type Renames struct {
 	// the other way, each provider's merged ones
 	into   map[string]string
 	merged map[string][]string
+}
+
+// Same is whether o is r itself, the one read UsageRenames hands back
+// while providers.json is unchanged: the same maps, not equal ones. A
+// reader that keeps what it made from r asks it to know r is unchanged.
+func (r Renames) Same(o Renames) bool {
+	at := func(m any) uintptr { return reflect.ValueOf(m).Pointer() }
+	return at(r.now) == at(o.now) && at(r.gave) == at(o.gave) && at(r.hosts) == at(o.hosts) &&
+		at(r.sites) == at(o.sites) && at(r.gone) == at(o.gone) && at(r.into) == at(o.into) &&
+		at(r.merged) == at(o.merged)
 }
 
 type gaveTo struct {

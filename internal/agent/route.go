@@ -158,7 +158,7 @@ func buildVia(agent, prefix string) []Option {
 		}
 		note := e.Provider.Name + " · via magpie"
 		if a := e.Provider.Account; a != nil {
-			note = firstUser(e.Provider) + " · via magpie"
+			note = firstUser(*e.Provider) + " · via magpie"
 		}
 		o := Option{Value: prefix + e.ID, Label: e.Name, Note: note,
 			Icon: e.Provider.Icon, Group: e.Provider.Name, Ref: e.ID, Free: e.Free, Rate: e.Rate, RateWas: e.RateWas, Context: e.Context, own: own[e.Provider.ID],
@@ -167,13 +167,13 @@ func buildVia(agent, prefix string) []Option {
 			o.Zero = e.Provider.PricedFree(set, e.Model)
 		}
 		// a model with a fast mode is switched fast in the picker (#954)
-		if provider.CanFast(e.Provider, e.Model) {
+		if provider.CanFast(*e.Provider, e.Model) {
 			o.FastFor, o.Fast = agent, slices.Contains(fast, e.ID)
-			o.OwnFast = provider.OwnFast(e.Provider, e.Model)
+			o.OwnFast = provider.OwnFast(*e.Provider, e.Model)
 			if tiered == nil {
 				tiered = provider.UltraModels()
 			}
-			if provider.UltraOn(e.Provider, e.Model, tiered) {
+			if provider.UltraOn(*e.Provider, e.Model, tiered) {
 				o.UltraOK, o.Ultra = true, o.Fast && slices.Contains(ultra, e.ID)
 			}
 		}
@@ -187,7 +187,7 @@ func buildVia(agent, prefix string) []Option {
 // setting, where an Option's Label is the name alone for magpie's picker.
 func listLabels(agent string) map[string]string {
 	shown, _ := provider.CatalogFor(agent)
-	labels := provider.Labels(shown)
+	labels := provider.LabelsFor(agent, shown)
 	out := make(map[string]string, len(shown))
 	for i, e := range shown {
 		out[e.ID] = labels[i]
@@ -291,6 +291,31 @@ var builtModels stampedLists[catalog.Model]
 type stampedLists[T any] struct {
 	sync.Mutex
 	m map[string]stampedList[T]
+	// sweeping says a sweep is armed. A list past magpieModelsFor is
+	// built again on the next ask, so it is let go then: Pi's alone was
+	// ~11 MB of an idle heap with real accounts, kept for the life of the
+	// process after one window poll.
+	sweeping bool
+}
+
+// sweep lets go of the lists past magpieModelsFor, and looks again when
+// the next of the rest will be.
+func (s *stampedLists[T]) sweep() {
+	s.Lock()
+	defer s.Unlock()
+	next := magpieModelsFor
+	for k, b := range s.m {
+		if left := magpieModelsFor - time.Since(b.at); left <= 0 {
+			delete(s.m, k)
+		} else if left < next {
+			next = left
+		}
+	}
+	if len(s.m) == 0 {
+		s.m, s.sweeping = nil, false
+		return
+	}
+	time.AfterFunc(next, s.sweep)
 }
 
 type stampedList[T any] struct {
@@ -318,6 +343,10 @@ func (s *stampedLists[T]) shared(key string, build func() []T) []T {
 			s.m = map[string]stampedList[T]{}
 		}
 		s.m[key] = b
+		if !s.sweeping {
+			s.sweeping = true
+			time.AfterFunc(magpieModelsFor, s.sweep)
+		}
 		s.Unlock()
 	}
 	return slices.Clip(b.list)
@@ -338,7 +367,7 @@ func buildModels(agent string) []catalog.Model {
 	defer provider.Hold()()
 	var out []catalog.Model
 	shown, _ := provider.CatalogFor(agent)
-	labels := provider.Labels(shown)
+	labels := provider.LabelsFor(agent, shown)
 	// a model magpie describes images to takes them (provider.Described)
 	seen := describedNow()
 	// the agent's own Long conversations, if it has one (ForAgent)
@@ -399,6 +428,9 @@ func buildModels(agent string) []catalog.Model {
 		// magpie-models.json for (#1530)
 		provider.CodexTiers(&m, e, members)
 		if agent == "codex" {
+			provider.CodexSeals(&m, e, members)
+		}
+		if agent == "codex" {
 			// the entry its vendor lists the model under in Codex's own
 			// shape, handed on as it is (codexcat)
 			m.Codex = e.Codex
@@ -417,7 +449,7 @@ func buildModels(agent string) []catalog.Model {
 		// OpenCode has no command for and takes as variants (#2379); a
 		// group is sent fast as the group says, as a fast pick is
 		if a := e.Provider.Account; e.Group == "" && a != nil && a.Agent == "codex" {
-			m.CodexFast = provider.CanFast(e.Provider, e.Model)
+			m.CodexFast = provider.CanFast(*e.Provider, e.Model)
 		}
 		m.Efforts, m.Keys, m.APIs, m.Endpoints = slices.Clip(m.Efforts), slices.Clip(m.Keys), slices.Clip(m.APIs), slices.Clip(m.Endpoints)
 		m.InputModalities, m.OutputModalities, m.Tiers, m.Codex = slices.Clip(m.InputModalities), slices.Clip(m.OutputModalities), slices.Clip(m.Tiers), slices.Clip(m.Codex)
@@ -466,3 +498,9 @@ func group(name string, opts []Option) []Option {
 }
 
 func gatewayV1() string { return gateway.URL() + "/v1" }
+
+// unknownWindow is the window an agent is told of a model whose own magpie
+// doesn't know: the agent's default n, held to the longest context the user
+// set for every model (settings.ContextCap) like every window that is known
+// (ul3140773077392 on X, #6259).
+func unknownWindow(n int) int { return settings.Shared().Capped(n) }

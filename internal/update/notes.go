@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/settings"
 )
 
@@ -25,18 +25,19 @@ type Note struct {
 	Pending bool `json:"pending,omitempty"`
 }
 
-// NotesFeed is where the notes of past releases are listed: this build's
-// own releases. MAGPIE_NOTES_FEED points it elsewhere.
+// NotesFeed is where the notes of past releases are listed: beside the
+// update feed, on magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
 func NotesFeed() string {
 	if f := os.Getenv("MAGPIE_NOTES_FEED"); f != "" {
 		return f
 	}
-	return feedAsset + "notes.json"
+	return Site + "/api/notes"
 }
 
-// ReleasePage is version's page on GitHub, where its notes are.
+// ReleasePage is version's page on GitHub, where its notes are when the
+// site can't give them (#661).
 func ReleasePage(version string) string {
-	return "https://github.com/" + Repo + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	return "https://github.com/yetone/magpie-releases/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 // NotesBetween asks the site for the notes of every release after after
@@ -165,9 +166,9 @@ func MostNotes() int {
 // Stable is whether Settings' Update channel is Stable: the update feed is
 // asked for a version a week, the newest that had been out three days as
 // the week began (Monday 00:00 UTC), or an urgent one (a security hole, a
-// ban risk, lost data) as soon as it is out. This build's feed is a static
-// file of the newest release (see Feed), which ignores the channel: Stable
-// lists what every channel lists, the newest release.
+// ban risk, lost data) as soon as it is out. usemagpie.ai chooses it from
+// the release list (site/worker.js, "The Stable channel"); a release is
+// urgent when a line of its notes starts with "**Urgent release:**".
 func Stable() bool { return settings.Load().UpdateChannel == settings.UpdateStable }
 
 // withChannel is feed asking for Stable's release on the Stable channel,
@@ -257,7 +258,7 @@ func Back(notes []Note, upto string, n int) []Note {
 	return out
 }
 
-var heading = regexp.MustCompile(`^(#{1,6})\s+(.*?)\s*#*\s*$`)
+var heading = lazyre.New(`^(#{1,6})\s+(.*?)\s*#*\s*$`)
 
 // installHeadings are the Install section's heading in each language the
 // notes come in: the Chinese notes call it 安装, and every release's own

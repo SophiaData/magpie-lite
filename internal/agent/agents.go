@@ -39,12 +39,15 @@ func init() {
 	// the Sessions page reads the sessions of the agents in WSL distros
 	sessions.WSLHomes = wslHomes
 	sessions.WSLRunning = WSLRunning
+	sessions.WSLListed = wslAnswered
 	sessions.WSLOff = func() bool { return !wslLooks() }
 	// an agy conversation started on magpie's gateway is picked up again
 	// there, with the variables and --model it was started with
 	sessions.AgyStart = func() string {
-		home, _ := homes()
-		return agy(home).Launch()
+		if a, _ := FindIn(local(), "agy"); a != nil && a.Launch != nil {
+			return a.Launch()
+		}
+		return ""
 	}
 	// a Copilot CLI signed in inside a running distro (#723)
 	provider.CopilotWSLDirs = copilotWSLDirs
@@ -53,6 +56,7 @@ func init() {
 	// and when Codex is connected or disconnected, or its route otherwise
 	// changes, so a running app sends where its config now says
 	provider.CodexAppRoute = codexAppRoute
+	provider.CodexBeforeAppEnd = codexRetagOpenThreads
 	// but not when Codex's account is switched while its provider takes
 	// no ChatGPT account: the app-server goes by none
 	provider.CodexNoAccount = codexNoAccount
@@ -185,6 +189,13 @@ var others = []*Agent{
 	// ("pi-desktop/0.1.0"), it is told apart from Pi by that name, which
 	// Pi's "pi-" would take otherwise (#1966, dgmico)
 	{ID: "pi-desktop", Name: "PI-Desktop", Icon: "pi", UA: []string{"pi-desktop"}},
+	// FlowDown (wiki.qaq.flow) and Bob (com.hezongyidev.Bob) set no
+	// User-Agent of their own: FlowDown's sources have none, and Bob's
+	// requests go out through the system's networking, which names the
+	// app's executable first ("FlowDown/<build> CFNetwork/… Darwin/…").
+	// Icons are the apps' own App Store icons (#shannnnnks on X).
+	{ID: "flowdown", Name: "FlowDown", Icon: "flowdown-color", UA: []string{"flowdown"}},
+	{ID: "bob", Name: "Bob", Icon: "bob-color", UA: []string{"bob/"}},
 	// Kimi Code Desktop runs Kimi Code's engine on ~/.kimi-code, so it
 	// reaches magpie through Kimi Code's config, under a client name of
 	// its own ("kimi-code-desktop/…", jiabubu on Discord). Its icon is the
@@ -194,6 +205,10 @@ var others = []*Agent{
 	// Sessions lists those as Raft's (internal/sessions/raft.go), while
 	// their requests say "pi (…)" and are Pi's
 	{ID: "raft", Name: "Raft", Icon: "generic"},
+	// Magpie Memory reading conversations into memories: its requests are
+	// made as memdistill.Agent, by its token and never a User-Agent, and
+	// drawn with the brain the Library's Memory tab has (the owner, 11-12)
+	{ID: "memory", Name: "Memory", Icon: "memory"},
 }
 
 // Clients is everyone whose requests the gateway knows by name: every
@@ -207,7 +222,7 @@ func ClientsIn(all []*Agent) []*Agent {
 	var out []*Agent
 	for _, a := range all {
 		// a WSL agent's requests are its Windows twin's by their UA
-		if a.WSL == "" {
+		if a.WSL == "" && !a.Nested {
 			out = append(out, a)
 		}
 	}
@@ -246,8 +261,27 @@ func local() []*Agent {
 	return append(own, pluggedAgents(home, own, nil)...)
 }
 
-// onMachine are builtins but those in WSL.
-func onMachine(home, cfg string) []*Agent {
+// Starter is the agent on this machine typed as q, by its id or an alias
+// (no prefix: every argument after it is the agent's), that magpie starts
+// from the command line (Agent.Start); nil for none.
+func Starter(q string) *Agent {
+	for _, a := range local() {
+		if a.Start == nil {
+			continue
+		}
+		if strings.EqualFold(a.ID, q) || slices.Contains(a.Aliases, strings.ToLower(q)) {
+			return a
+		}
+	}
+	return nil
+}
+
+// onMachine are builtins but those in WSL, and but those a plugin serves
+// now (agentMovers).
+func onMachine(home, cfg string) []*Agent { return dropMoved(onMachineAll(home, cfg)) }
+
+// onMachineAll is onMachine with every built-in.
+func onMachineAll(home, cfg string) []*Agent {
 	return append([]*Agent{
 		claude(home),
 		claudeDesktop(home),
@@ -267,6 +301,7 @@ func onMachine(home, cfg string) []*Agent {
 		aside(home),
 		omo(home),
 		primeAgent(home),
+		mu(home),
 		goose(home, cfg),
 		cursor(home),
 		cursorLocal(),
@@ -294,11 +329,14 @@ func onMachine(home, cfg string) []*Agent {
 		muse(cfg),
 		empryo(home),
 		nanobot(home),
+		miniq(home),
+		paimon(home),
 		ante(home),
 		astrbot(home),
 		qwenpaw(home),
 		openClaw(home),
 		jcode(home),
+		vibe(home),
 		miniMax(home),
 		droid(home),
 		cline(home),
@@ -311,23 +349,30 @@ func onMachine(home, cfg string) []*Agent {
 		workbuddyAI(home),
 		codebuddy(home),
 		pencil(home),
+		paseo(home),
 		openPencil(home, cfg),
 		openBot(home, cfg),
+		craftAgents(home),
+		obsidian(home, cfg),
+		tuanjieCowork(home),
 		newMax(home),
 		liveAgent(home),
 		raycast(home),
 		kiroCrew(home),
 		t3code(home),
 		openMausBot(home),
+		avibe(home),
+		kun(home),
 		hanako(home),
 		atomcode(home),
 		snow(home),
 		alma(),
+		shelley(home),
 		cindy(),
 		aionui(),
 		cherryStudio(home),
 		lody(home),
-	}, append(ompProfiles(home), qwenpawAgents(home)...)...)
+	}, append(append(append(ompProfiles(home), qwenpawAgents(home)...), hermesProfileAgents(home)...), claudeDirAgents(home)...)...)
 }
 
 // ---- accessors -------------------------------------------------------------
@@ -615,7 +660,7 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 		for _, m := range models {
 			window := m.Context
 			if window == 0 {
-				window = 200000
+				window = unknownWindow(200000)
 			}
 			// without it Crush caps every reply at 16384 tokens, a model
 			// that can write more of them never asked for it; an output
@@ -803,8 +848,12 @@ func objectPairs(raw []byte) orderedJSON {
 //     1.4.0, api/google-generative-ai.js; yunfei9958 on X). Per-request
 //     fetch is a feature of Pi's SDK, so any other host of it can do the
 //     same. OmO's and Prime Agent's folders are their own, and keep it.
+//   - mu (mu.go) is Pi 1.4.0 itself, and its desktop app runs that Pi on
+//     the same folder through a host of its own (desktop/scripts/kyrn,
+//     qybaihe/mu b71cd18) that magpie hasn't tried with Gemini's API, so
+//     it goes the way Pi's folder does.
 func piAsked(agentID string, m catalog.Model) catalog.Model {
-	if agentID == "stepcode" || agentID == "pi" {
+	if agentID == "stepcode" || agentID == "pi" || agentID == "mu" {
 		m.APIs = slices.DeleteFunc(slices.Clone(m.APIs), func(a string) bool { return a == string(provider.Gemini) })
 	}
 	return m
@@ -890,13 +939,8 @@ func piModelJSON(m catalog.Model, gw string, native bool) map[string]any {
 		// (addedMark). That short lifetime the group declares; long stays
 		// out, the gateway marks an hour only where a session's turns are
 		// often far apart, so it isn't always true.
-		if _, ms, ok := provider.GroupFinder()(m.ID); ok {
-			for _, g := range ms {
-				if g.Provider.Native(g.Model) == provider.Anthropic {
-					e["promptCache"] = map[string]any{"short": 300}
-					break
-				}
-			}
+		if provider.GroupHasNative(m.ID, provider.Anthropic) {
+			e["promptCache"] = map[string]any{"short": 300}
 		}
 	}
 	return e
@@ -1119,7 +1163,9 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 		}
 	}
 	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
-	provider := openCodeKept(path, block)
+	// the file as the agent reads it: in OpenCode 2's words for an
+	// OpenCode 2, asked each time, as an update may have come since
+	file := func() ocFile { return ocFile{path: path, two: id == "opencode" && openCodeTwo(at), block: block} }
 	opts := func(key string) func(map[string]string) []Option {
 		return func(cur map[string]string) []Option {
 			return withVia(ownOptions(auth, cur[key]), id, magpieID+"/")
@@ -1130,12 +1176,21 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 	// OpenCode it runs on this config, is one of magpie's: magpie's
 	// provider has to stay
 	onMagpie := func() bool {
-		return usesMagpie(get("model"), get("small_model")) || id == "opencode" && at.spell == nil && openChamberOnMagpie()
+		return usesMagpie(get("model"), file().small()) || id == "opencode" && at.spell == nil && openChamberOnMagpie()
 	}
 	set := func(key string) func(string) error {
+		put := func(v string) error {
+			if key == "small_model" {
+				return file().setSmall(v)
+			}
+			if v == "" {
+				return edit.DelJSON(path, key)
+			}
+			return edit.SetJSON(path, edit.KV{Path: key, Value: v})
+		}
 		return func(v string) error {
 			if v == "" {
-				if err := edit.DelJSON(path, key); err != nil {
+				if err := put(""); err != nil {
 					return err
 				}
 				if onMagpie() {
@@ -1147,7 +1202,7 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 			if err != nil {
 				return err
 			}
-			return edit.SetJSON(path, edit.KV{Path: key, Value: v})
+			return put(v)
 		}
 	}
 	return &Agent{
@@ -1155,28 +1210,20 @@ func openCodeLike(at place, id, name, icon, bin, dir, auth string, ua []string, 
 		UA:  ua,
 		Bin: bin, Dir: dir, Path: path,
 		Check: func() string {
-			if !usesMagpie(get("model"), get("small_model")) {
+			if !usesMagpie(get("model"), file().small()) {
 				return ""
 			}
 			return openCodeWiringOff(name, path, at.v1(), openCodeKeyAt(id, at.gw()))
 		},
 		ListOnly: true,
 		Sync: func() error {
-			var err error
 			// a model of magpie's chosen, but its provider gone from the
 			// file: put it back, or the agent has nothing to send it to
-			if _, ok := edit.GetJSON(path, "provider."+magpieID); !ok && onMagpie() {
-				err = edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: provider()})
-			} else {
-				err = syncJSONInOrder(path, "provider."+magpieID, provider)
-			}
-			// and where the file keeps it under providers too, which
-			// OpenCode 2 reads instead, there as well (#3883)
-			return errors.Join(err, syncOpenCodeNative(path, block))
+			return file().sync(onMagpie())
 		},
 		Fields: []Field{
 			{Key: "model", Label: "model", Get: jsonGet(path, "model"), Set: set("model"), Options: opts("model")},
-			{Key: "small", Label: "small", Get: jsonGet(path, "small_model"), Set: set("small_model"), Options: opts("small")},
+			{Key: "small", Label: "small", Get: func() string { return file().small() }, Set: set("small_model"), Options: opts("small")},
 		},
 	}
 }
@@ -1212,10 +1259,7 @@ func openCodeRefAt(at place, path, id, v string) (string, error) {
 		return own + "/" + ref, nil
 	}
 	block := func() any { return magpieProviderJSONAt("opencode", id, at.gw()) }
-	if err := edit.SetJSON(path, edit.KV{Path: "provider." + magpieID, Value: openCodeKept(path, block)()}); err != nil {
-		return v, err
-	}
-	return v, syncOpenCodeNative(path, block)
+	return v, ocFile{path: path, two: id == "opencode" && openCodeTwo(at), block: block}.sync(true)
 }
 
 // ownGatewayProvider is the provider in an OpenCode config, other than
@@ -1500,7 +1544,20 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 	if id == "pi" {
 		extension = func() error { return piExtensionSynced(dir, modelsPath, at.v1(), key()) }
 	}
+	// the pi-magpie extension serves provider "magpie" live, so Pi's
+	// models.json block is not written and magpie's own stale one goes
+	// (pimagpie.go)
+	viaExt := func() bool { return id == "pi" && piMagpieInstalled(path) }
 	writeMagpie := func() error {
+		if viaExt() {
+			if err := dropPiBlock(modelsPath, func() string {
+				return wiringOff(name, modelsPath, func(k string) (string, bool) { return edit.GetJSON(modelsPath, "providers."+magpieID+"."+k) },
+					"baseUrl", at.v1(), "apiKey", key())
+			}); err != nil {
+				return err
+			}
+			return extension()
+		}
 		if err := edit.SetJSON(modelsPath, edit.KV{Path: "providers." + magpieID, Value: block()}); err != nil {
 			return err
 		}
@@ -1511,11 +1568,19 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 	before := beforeMagpie{at.key(id + ".before.absent"), []string{path, modelsPath}}
 	// the entries of enabledModels a sync took out (scope_gone.go)
 	gone := at.key(id + ".scope.gone")
+	var telemetry *Telemetry
+	if id == "pi" {
+		telemetry = piTelemetry(at, path)
+	}
 	return &Agent{
-		ID: id, Name: name, Icon: id, Bin: id, Dir: dir, Path: path, Spelled: prefixed,
+		Telemetry: telemetry,
+		ID:        id, Name: name, Icon: id, Bin: id, Dir: dir, Path: path, Spelled: prefixed,
 		Restore: before.restore,
 		Check: func() string {
 			if p, _ := get("defaultProvider"); p != magpieID {
+				return ""
+			}
+			if viaExt() {
 				return ""
 			}
 			return wiringOff(name, modelsPath, func(k string) (string, bool) { return edit.GetJSON(modelsPath, "providers."+magpieID+"."+k) },
@@ -1523,7 +1588,11 @@ func piLikeKeyed(at place, id, name, dir string, key func() string) *Agent {
 		},
 		ListOnly: true,
 		Sync: func() error {
-			if err := syncJSON(modelsPath, "providers."+magpieID, block); err != nil {
+			if viaExt() {
+				if err := writeMagpie(); err != nil { // drops the stale block
+					return err
+				}
+			} else if err := syncJSON(modelsPath, "providers."+magpieID, block); err != nil {
 				return err
 			}
 			if err := extension(); err != nil {
@@ -1648,7 +1717,8 @@ func gooseIn(at place, cfg string) *Agent {
 		keyEnv = func(string) string { return "" }
 	}
 	return &Agent{
-		ID: "goose", Name: "Goose", Icon: "goose", Bin: "goose", Dir: filepath.Dir(path), Path: path, Spelled: prefixed, NoNames: true,
+		Telemetry: gooseTelemetry(at, path),
+		ID:        "goose", Name: "Goose", Icon: "goose", Bin: "goose", Dir: filepath.Dir(path), Path: path, Spelled: prefixed, NoNames: true,
 		UA: []string{"goose"},
 		Check: func() string {
 			if p, _ := gooseActive(path); p != gooseProviderID {
@@ -2037,7 +2107,8 @@ func crushAt(at place, path, data string) *Agent {
 		}
 	}
 	return &Agent{
-		ID: "crush", Name: "Crush", Icon: "crush", Bin: "crush", Dir: filepath.Dir(path), Path: path, Spelled: prefixed,
+		Telemetry: crushTelemetry(at, path),
+		ID:        "crush", Name: "Crush", Icon: "crush", Bin: "crush", Dir: filepath.Dir(path), Path: path, Spelled: prefixed,
 		UA: []string{"crush"},
 		Check: func() string {
 			large, _ := pick("models.large.provider")

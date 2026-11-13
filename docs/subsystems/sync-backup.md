@@ -108,6 +108,22 @@ sync both ways throughout. A kept agent is not listed under Kept on this
 computer, which is the implicit own fields only (`TestAgentHereThroughSync`,
 `TestAgentsHereIsThisComputers`, `agent-here.test.cjs`).
 
+A provider can also be kept on one computer
+([`Provider.ThisDevice`](../../internal/provider/provider.go): the provider
+row's menu, `magpie provider this-device <id> yes|no`), for a local model that
+exists only there (treydtw on X). `collect` leaves it, and its place in the
+provider order, out of what sync sends, so changing it is no change to push
+and the other computers lose their copy of it at their next sync. When a
+bundle is brought in, `provider.Mirror` neither replaces nor removes a provider
+kept here, whatever the other computers have under its id, and takes in none
+that a bundle marks as kept on its computer
+(`TestProviderOnThisDeviceStaysOnIt`). It is off by default for every provider,
+local addresses included: a copy of a `127.0.0.1` provider on a computer that
+runs the same local server works, and turning it on by default would take the
+copies off the computers that have one. A file backup (`backup.Collect`) still
+carries the provider, with the mark, and a Restore keeps the mark a provider
+here has.
+
 Sharing turned on at one computer never turns it on or off at another
 (Lullaby on Discord). A backup restored onto a new computer leaves sharing as
 that computer has it, off on a fresh one: sharing opens the gateway to the
@@ -138,6 +154,24 @@ local-only changes go up, remote-only changes come down, and a part changed
 on both sides keeps the newer version while retaining the replaced copy.
 A conditional write refused because another computer committed in between
 is retried through this same merge.
+
+A computer can follow the server instead (`Config.FollowServer`, set only
+by `SetFollowServer`: Settings → Sync → This computer → Follows the
+server, `/api/davsync/follow-server`, or `magpie <webdav|s3|github>
+follow on|off`; Ramon317317 on X). It takes every changed part from the
+file whichever side is newer, never writes the file (not a merged
+sign-in, not a rebuild of a damaged file), and a change made on it is
+kept in the sync folder like a join's and said in the notice
+(`Notice.Followed`). The join rules still hold: an `unset` part on the
+server leaves this computer's, and own agent fields and agents only here
+stay. Following a server with no file yet is an error, nothing sent.
+The Library page says so above its Instructions, MCP, Skills, Hooks,
+Subagents and Plugins tabs (and Memory while memory is synced), with a link
+to that setting (`followNote` in `plugins/library/client.js`,
+`library-follow-server.test.cjs`).
+`Configure` keeps the choice, as it keeps `AutoEvery`. The computer
+followed is an ordinary two-way one (`TestFollowServer`,
+`TestFollowServerSendsNoSignIn`, `sync-follow-server.test.cjs`).
 
 When a remote file is empty, damaged or another app's format, sync stops and
 describes it through `ServerFile`. Settings and the backend's `upload` command
@@ -203,11 +237,67 @@ clock.
   case aside off Linux), the default included; Settings then says under the
   folder that a reinstalled system or a lost disk takes the backups too, and
   to pick one on another disk or a cloud drive's (two_2025. on Discord,
-  magpie on C:). Keeping everything elsewhere is portable mode
-  (`internal/appdir`); docs/start's `#data-folder` gives both
-  (`TestAutoInsideMagpiesFolder`, `auto-backup.test.cjs`).
+  magpie on C:). Keeping everything elsewhere is the Data folder's move
+  (below) or portable mode (`internal/appdir`); docs/start's
+  `#data-folder` gives all three (`TestAutoInsideMagpiesFolder`,
+  `auto-backup.test.cjs`).
 - **Sign-ins:** off unless picked (`SignIns`, with `Passphrase`); see
   [Sign-ins, when picked](#sign-ins-when-picked).
+- **Plugins:** ride the providers part. `AddPlugins` only adds, so a removal is
+  `syncOnce`'s: it keeps the names both sides had after the last sync
+  (`state.Plugins`), and a name one side has since lost is removed on the other
+  (`pluginPlan`, `removePlugin`), however the providers part came out. One that
+  can't be removed (its agent is on magpie) is tried again next sync. A plugin
+  added on one side stays (dolacmeo on X; `TestSyncPluginRemovalSpreads`). Not
+  yet: an older sync with no record (`state.Plugins` empty) removes nothing.
+- **Memory:** on unless turned off (`Memory`), merged memory by memory in
+  `syncOnce` after the sign-ins, never replaced as a part; see
+  [Memory's backups and sync](memory.md#backups-and-sync).
+
+## Data folder on another disk
+
+Settings › Sync's Data folder (CHENGJIAHEGOXIS and buhaodeshiyehao on X)
+moves magpie's own files and cache to another disk, and back.
+[`internal/appdir/move.go`](../../internal/appdir/move.go) does it:
+
+- **What moves:** `appdir.Config()` and `appdir.Cache()` only, into
+  `<picked>/magpie/config` and `<picked>/magpie/cache`. The agents' own
+  folders (`~/.claude`, `~/.codex`…) and their session histories stay where
+  each agent reads them. A link is left at each old path (a symlink, or a
+  junction on Windows when symlinks need a privilege, as in #973), so every
+  path magpie and the agents were given still works. A portable magpie is
+  never moved.
+- **Refused before anything quits** (`Target`): a relative path, a folder
+  that isn't there, a `magpie` folder there with files in it, or a folder
+  inside magpie's own folders.
+- **Never under a running magpie.** `AskMove` writes `move-to.json` in the
+  config folder. The GUI then starts itself again (`restartSelf`, the
+  update path's relaunch) and quits; when another magpie serves the gateway
+  (`magpie serve`, a launch agent), or for magpie web, it doesn't restart,
+  and the row says the move waits. The next start runs `MovePending` in
+  `cli.Main` before anything reads a file, after the old process is gone
+  and only when no gateway answers. It is made once: a failure is not asked
+  for again, and why is kept in `move-result.json` for the row.
+- **How:** within one disk, a rename. Across disks, a copy, and the old
+  folder is put aside (`.moved`) until the link is made, then removed; a
+  failed copy removes the half copy and leaves the old folder as it was.
+  Moving back takes the link away and renames the folder home; across
+  disks it puts the link back, copies to `<config>.moving` and renames that
+  into place. The empty `magpie` folder on the disk is then removed. The
+  config moves first: a cache that fails after it says so and leaves the
+  config moved.
+- **Disk gone:** a link that leads nowhere is `UnreachableError`. `cli.Main`
+  stops on it, with a native alert from the app (as #989), rather than
+  starting an empty magpie that would write a new config over the link.
+- **CLI:** `magpie data` says where they are; `magpie data move <folder>`
+  moves at once with no gateway up, otherwise asks for it;
+  `magpie data move --home` and `magpie data cancel`.
+
+Routes: `GET /api/datafolder`, `POST /api/datafolder/{move,home,cancel,reveal}`
+([`datafolder.go`](../../internal/gui/datafolder.go)). Tests:
+`internal/appdir/move_test.go` (both disks, refused targets, a failed copy,
+disk gone, once only), `move_windows_test.go` (the junction),
+`TestDataFolderMoveRestarts` and `data-folder.test.cjs`.
 
 ## Sign-ins, when picked
 
@@ -382,7 +472,7 @@ with none hashes as before (`TestSyncHooks`, `TestNoHooksHashAsBefore`,
 ```sh
 go test -tags nogui ./internal/davsync
 go test -tags nogui ./internal/cli -run 'TestGitHubCmd|TestWebdavCmd|TestS3Cmd'
-node --test internal/gui/tests/github-sync.test.cjs internal/gui/tests/s3-sync.test.cjs internal/gui/tests/sync-other-kind.test.cjs
+node --test internal/gui/tests/github-sync.test.cjs internal/gui/tests/s3-sync.test.cjs internal/gui/tests/sync-other-kind.test.cjs internal/gui/tests/sync-follow-server.test.cjs
 ```
 
 `TestGitHubEmptyRepository` covers the first encrypted backup initializing an

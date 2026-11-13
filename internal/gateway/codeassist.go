@@ -8,13 +8,13 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -31,7 +31,7 @@ import (
 // this one tells it not to.
 const skipSignature = "skip_thought_signature_validator"
 
-var unsafeToolID = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+var unsafeToolID = lazyre.New(`[^a-zA-Z0-9_-]`)
 
 // antigravityBaseOf is the model an id of Antigravity's own is one level
 // of; a var so tests can stand in for it.
@@ -89,13 +89,14 @@ func antigravityTurnsAway(system string) bool {
 //     goes through, and so does today's "You are Hermes Agent, built by
 //     Nous Research."
 //
-// Each is broken up before it goes by a zero-width space after its first
-// letter (antigravityCloak), which Google lets through: each line so
-// broken ("Y", U+200B, "ou are Codex, an agent based on GPT-5"; "b",
-// U+200B, "uilt on Anthropic's Claude Agent SDK"; and so on) was answered
-// on a real account where the line as written was turned away. A mention
-// of the Claude Agent SDK elsewhere ("running within the Claude Agent
-// SDK") goes through as written, and is sent so.
+// Each is broken up before it goes by zero-width spaces (antigravityCloak),
+// which Google lets through. A break after only a line's first letter was
+// turned away again on 11-11 for Claude Code's two lines, so each word has
+// two. Codex's and Hermes' lines went through as written on 11-11 too, and
+// are still broken up: that costs nothing and a Codex thread that is
+// refused again says why. A mention of the Claude Agent SDK elsewhere
+// ("running within the Claude Agent SDK") goes through as written, and is
+// sent so.
 var agTurnedAway = []string{
 	"x-anthropic-billing-header:",
 	"built on anthropic's claude agent sdk",
@@ -118,16 +119,44 @@ func antigravityTurnsHermesAway(system string) bool {
 	return strings.Contains(strings.ToLower(system), "hermes agent, an intelligent ai assistant created by nous research")
 }
 
+// agReworded are paragraphs Antigravity takes but answers badly, each with
+// a rewording that says the same. DeepSeek Harness's desktop app puts the
+// first in every system prompt: with it word for word, gemini-4-argon
+// answered most requests in about 3s at about 300 tok/s with no thinking,
+// and ended after one shallow step. With only it removed, or reworded, a
+// recorded DSH request was answered normally 20 of 20 times
+// (magpie-community/plugins#1028, whose antigravity plugin does the same).
+var agReworded = [][2]string{{
+	`Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. A trailing slash marks a directory: list it when its contents matter. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @"..." quotes a path containing spaces.`,
+	`When the user writes @ followed by a path, they are pointing at that file or folder. Relative paths start at the workspace root; absolute paths are host paths. A path ending in a slash is a folder, so list it if its contents matter; otherwise it is a file, so open it with the read tool before relying on it. Paths with spaces appear as @"...".`,
+}}
+
+// antigravityReword is system with each paragraph of agReworded in it, word
+// for word, said as its rewording, and everything else as written.
+func antigravityReword(system string) string {
+	for _, w := range agReworded {
+		system = strings.ReplaceAll(system, w[0], w[1])
+	}
+	return system
+}
+
 // zeroWidth is what antigravityCloak puts inside a line Antigravity turns
 // away: U+200B, which the model reads past and Google's check doesn't.
 const zeroWidth = "\u200b"
 
 // antigravityCloak is system with each line of agTurnedAway in it broken up
-// by a zero-width space after its first letter, wherever and in whatever
-// case it is, and every other word as the agent wrote it: what an
-// Antigravity account's system instruction is sent as, unless the user has
-// it sent as written (Provider.PromptAsWritten). A line already broken up
-// (the antigravity-cloak plugin's) isn't one any more and is left alone.
+// by zero-width spaces, wherever and in whatever case it is, and every other
+// word as the agent wrote it: what an Antigravity account's system
+// instruction is sent as, unless the user has it sent as written
+// (Provider.PromptAsWritten). Inside a line, every run of three or more
+// letters or digits gets one after its first and one after its second
+// character. One after the first letter only (what this did until 11-11)
+// stopped working: Google's check then turned "x\u200b-anthropic-billing-
+// header:" and "b\u200built on Anthropic's Claude Agent SDK" away again
+// (a real account, Claude Code 2.1.316's prompt, @shzutbi1 on X), while the
+// same lines with two breaks in every word were answered.
+// A line already broken up (the antigravity-cloak plugin's) isn't one any
+// more and is left alone.
 func antigravityCloak(system string) string {
 	if !antigravityTurnsAway(system) {
 		return system
@@ -146,7 +175,7 @@ func antigravityCloak(system string) string {
 			if j < 0 {
 				break
 			}
-			at = append(at, i+j+1)
+			at = append(at, agBreaks(low, i+j, i+j+len(line))...)
 			i += j + len(line)
 		}
 	}
@@ -162,6 +191,31 @@ func antigravityCloak(system string) string {
 	}
 	b.WriteString(system[prev:])
 	return b.String()
+}
+
+// agBreaks are the offsets in s[from:to] a zero-width space goes at: after
+// the first and after the second character of every run of three or more
+// ASCII letters or digits.
+func agBreaks(s string, from, to int) []int {
+	var at []int
+	for i := from; i < to; {
+		j := i
+		for j < to && agAlnum(s[j]) {
+			j++
+		}
+		if j-i >= 3 {
+			at = append(at, i+1, i+2)
+		}
+		if j == i {
+			j++
+		}
+		i = j
+	}
+	return at
+}
+
+func agAlnum(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
 }
 
 // asciiLower lower-cases only ASCII letters, keeping every byte where it is.
@@ -292,10 +346,11 @@ func codeAssistBody(p provider.Provider, r *Request, model string, wires map[str
 	model = p.OwnModelID(model)
 	sent := codeAssistID(model, r.Effort, p.Account.Agent)
 	if p.Account.Agent == "antigravity" && !p.PromptAsWritten {
-		// the lines Google turns away, broken up; the request the
+		// the lines Google turns away, broken up, and the paragraphs
+		// it answers badly, reworded; the request the
 		// caller holds keeps the system prompt as written, which the
 		// refusal is told against (antigravityTurnedAway)
-		if cloaked := antigravityCloak(r.System); cloaked != r.System {
+		if cloaked := antigravityReword(antigravityCloak(r.System)); cloaked != r.System {
 			rc := *r
 			rc.System = cloaked
 			r = &rc
@@ -375,13 +430,13 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 				}
 			case Image, File:
 				if p.Data != "" {
-					parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": p.MediaType, "data": p.Data}})
+					parts = append(parts, geminiInline(p.MediaType, p.Data))
 				} else if p.URL != "" {
 					parts = append(parts, map[string]any{"fileData": map[string]any{"mimeType": p.MediaType, "fileUri": p.URL}})
 				}
 			case ToolCall:
 				names[p.ID] = p.Name
-				call := map[string]any{"name": p.Name, "args": json.RawMessage(argsOf(p))}
+				call := map[string]any{"name": geminiFuncName(p.Name), "args": json.RawMessage(argsOf(p))}
 				if id := toolID(p.ID); id != "" {
 					call["id"] = id
 				}
@@ -397,7 +452,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 				}
 				parts = append(parts, part)
 			case ToolResult:
-				name := names[p.CallID]
+				name := geminiFuncName(names[p.CallID])
 				if name == "" {
 					name = "tool"
 				}
@@ -423,7 +478,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 				var ims []map[string]any
 				for _, im := range p.Images {
 					if im.Data != "" {
-						ims = append(ims, map[string]any{"inlineData": map[string]any{"mimeType": im.MediaType, "data": im.Data}})
+						ims = append(ims, geminiInline(im.MediaType, im.Data))
 					} else if im.URL != "" {
 						ims = append(ims, map[string]any{"fileData": map[string]any{"mimeType": im.MediaType, "fileUri": im.URL}})
 					}
@@ -466,14 +521,24 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 		// in one, the tool_result turn Anthropic reads them as.
 		var said []map[string]any
 		if role == "user" && !(ag && claude) && hasResponse(parts) {
-			var tools []map[string]any
+			var tools, images []map[string]any
 			for i, part := range parts {
-				if part["functionResponse"] != nil || toolImage[i] {
+				switch {
+				case part["functionResponse"] != nil:
 					tools = append(tools, part)
-				} else {
+				case toolImage[i] && !vx:
+					tools = append(tools, part)
+				case toolImage[i]:
+					// Vertex AI turns a response turn with an image in
+					// it away the same way (Codex's view_image: "Viewed
+					// an image", then the 400; Voo_Ler on X): the image
+					// goes in the user turn after the response
+					images = append(images, part)
+				default:
 					said = append(said, part)
 				}
 			}
+			said = append(images, said...)
 			parts = tools
 		}
 		for _, ps := range [][]map[string]any{parts, said} {
@@ -510,7 +575,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 	if len(r.Tools) > 0 && r.ToolChoice != "none" {
 		var decls []map[string]any
 		for _, t := range r.Tools {
-			d := map[string]any{"name": t.Name}
+			d := map[string]any{"name": geminiFuncName(t.Name)}
 			if t.Description != "" {
 				d["description"] = t.Description
 			}
@@ -533,7 +598,7 @@ func buildCodeAssistSent(r *Request, sent, agent string) []byte {
 			mode = "ANY"
 		case strings.HasPrefix(r.ToolChoice, "name:"):
 			mode = "ANY"
-			fc["allowedFunctionNames"] = []string{strings.TrimPrefix(r.ToolChoice, "name:")}
+			fc["allowedFunctionNames"] = []string{geminiFuncName(strings.TrimPrefix(r.ToolChoice, "name:"))}
 		case ag && claude:
 			// Antigravity's Claude wants its calls checked against the schema
 			mode = "VALIDATED"
@@ -796,7 +861,7 @@ func thinkingConfig(r *Request, model string, claude bool, at string) map[string
 
 // geminiVersion is the major version in a Gemini model's id, as the id
 // names it: gemini-4-argon, models/gemini-3.8-flash, gemini-2.5-pro.
-var geminiVersion = regexp.MustCompile(`(?:^|/)gemini-(\d+)`)
+var geminiVersion = lazyre.New(`(?:^|/)gemini-(\d+)`)
 
 // geminiGeneration is the generation of Gemini model names, 0 for an id
 // that names none (a non-Gemini model, or an alias such as
@@ -1100,6 +1165,12 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 					props := map[string]any{}
 					if m, ok := v.(map[string]any); ok {
 						for pk, pv := range m {
+							if pk == "" {
+								// Google turns a request away over a property
+								// with no name ("Request contains an invalid
+								// argument", fwxkogaia on X)
+								continue
+							}
 							// a property whose schema is false is one the
 							// call may not have: it is left out, and so is
 							// its name in required
@@ -1150,6 +1221,14 @@ func plainSchema(raw json.RawMessage) json.RawMessage {
 			if c, ok := x["const"]; ok {
 				if s, ok := c.(string); ok && strings.TrimSpace(s) != "" {
 					out["enum"] = []any{s}
+				}
+			}
+			if es, ok := out["enum"]; ok && out["type"] == "array" {
+				// an enum on an array is its items' values; Google takes enum on a string
+				delete(out, "enum")
+				if it, ok := out["items"].(map[string]any); ok && it["enum"] == nil && (it["type"] == nil || it["type"] == "string") {
+					it["type"] = "string"
+					it["enum"] = es
 				}
 			}
 			if out["type"] == nil {
@@ -1457,6 +1536,20 @@ func (d *codeAssistDecoder) decode(data string, emit func(Event)) error {
 		}
 		if cand.FinishReason != "" && !d.stopped {
 			d.flush(emit)
+			if !d.tools && (cand.FinishReason == "MALFORMED_FUNCTION_CALL" || cand.FinishReason == "UNEXPECTED_TOOL_CALL") {
+				// the model made a call and Google would not take it as one
+				// ("Malformed function call: call:default_api:Name{…}"): the
+				// call is in the message, whole, and the client can run it.
+				// Left alone the reply read as empty, though it had cost
+				// tokens, and was asked again for nothing (fwxkogaia on X)
+				if i := strings.Index(cand.FinishMessage, callMarker); i >= 0 {
+					if name, args, n := textCall(cand.FinishMessage[i:]); n > 0 {
+						d.tools = true
+						emit(Event{Kind: KToolStart, ID: "call_" + newID(), Name: toolOfCall(name)})
+						emit(Event{Kind: KToolArgs, Text: string(args)})
+					}
+				}
+			}
 			d.stopped = true
 			stop := stopFromGemini(cand.FinishReason)
 			if d.tools && stop == "stop" {
@@ -1484,14 +1577,30 @@ const callMarker = "call:" + geminiNamespace + ":"
 
 const geminiNamespace = "default_api"
 
+// nameLead stands before a tool name Google would turn away.
+const nameLead = "_x_"
+
+// geminiFuncName is a tool's name as Google takes it: a function name
+// starts with a letter or an underscore, so one that starts with a digit or
+// a dash (MCP tools named for their server's id) turned the whole request
+// away as "Request contains an invalid argument" (fwxkogaia on X). The
+// decoder takes nameLead off again.
+func geminiFuncName(n string) string {
+	if n != "" && (n[0] >= '0' && n[0] <= '9' || n[0] == '-' || n[0] == '.' || n[0] == ':') {
+		return nameLead + n
+	}
+	return n
+}
+
 // toolOfCall is a call's tool name without Gemini's namespace.
 func toolOfCall(name string) string {
 	for _, sep := range []string{":", "."} {
 		if t, ok := strings.CutPrefix(name, geminiNamespace+sep); ok && t != "" {
-			return t
+			name = t
+			break
 		}
 	}
-	return name
+	return strings.TrimPrefix(name, nameLead)
 }
 
 // maxHeld bounds a call written out as text: one that goes on longer is
@@ -1704,6 +1813,7 @@ type geminiChunk struct {
 			Parts []gPart `json:"parts"`
 		} `json:"content"`
 		FinishReason      string `json:"finishReason"`
+		FinishMessage     string `json:"finishMessage"`
 		GroundingMetadata *struct {
 			WebSearchQueries []string `json:"webSearchQueries"`
 			GroundingChunks  []struct {

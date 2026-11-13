@@ -10,7 +10,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -28,12 +27,14 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/imagemcp"
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // Server is one MCP server: a command magpie's agents start, or a URL they
 // reach.
 type Server struct {
-	Name string `json:"name"`
+	Name   string `json:"name"`
+	Bundle string `json:"bundle,omitempty"` // the Claude Code plugin it came with (plugin.go)
 	// Transport is stdio for a command, http (streamable) or sse for a URL.
 	Transport string            `json:"transport"`
 	Command   string            `json:"command,omitempty"`
@@ -51,6 +52,12 @@ type Server struct {
 	// (GitHub's, 新v学员 on Discord). It is magpie's alone: the agents are
 	// given the server as before.
 	OAuth *OAuthApp `json:"oauth,omitempty"`
+	// Accounts are further sets of headers for the server (Elorynth on X:
+	// several keys, one in use), each laid over Headers, and Account is the
+	// one the agents are given ("" for Headers as they are). magpie's own
+	// OAuth sign-ins to the server have their accounts in mcpauth.
+	Accounts []Account `json:"accounts,omitempty"`
+	Account  string    `json:"account,omitempty"`
 	// StartupTimeout is the seconds an agent waits for the server to start
 	// and list its tools: Codex's startup_timeout_sec (#3168), the only
 	// agent given it. 0 leaves it to the agent (Codex's own is 30s).
@@ -187,7 +194,7 @@ func (s *Server) check() error {
 			delete(s.Headers, k)
 		}
 	}
-	return nil
+	return s.checkAccounts()
 }
 
 // spacedProgram is a program by full path that has spaces in it, typed
@@ -354,7 +361,7 @@ func (f *mcpFile) supports(s *Server) error {
 
 // windowsPath is a program named as Windows names one: C:/…, a path with a
 // backslash in it, or …/npx.cmd.
-var windowsPath = regexp.MustCompile(`^[A-Za-z]:[\\/]|\\|(?i)\.(?:exe|cmd|bat|ps1)$`)
+var windowsPath = lazyre.New(`^[A-Za-z]:[\\/]|\\|(?i)\.(?:exe|cmd|bat|ps1)$`)
 
 // foreign says why an entry by the server's name that magpie can't read as
 // a server is one it mustn't write over, or nil: Zed's server from an

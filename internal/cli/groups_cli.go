@@ -23,10 +23,14 @@ const groupUsage = `usage:
   magpie group add <name> models=<m1>[,m2…] [routing=…] [stays=…]
                                           make a group; agents pick it as group/<id>, the id made from the name;
                                           a name in use replaces that group
-  magpie group set <id> k=v…              change one: name, models (the whole list, in order, patterns too),
+  magpie group set <id> k=v…              change one: name, note (your own word on it, shown under its name:
+                                          note='for the work key'; empty clears it),
+                                          models (the whole list, in order, patterns too),
                                           models+=<m>[,m2…] (append), models-=<m>[,m2…] (drop), routing, stays,
                                           context (how long a request agents are told it takes: 272k; smallest
-                                          is its smallest model's; empty is its largest model's), levels (the reasoning levels agents are offered:
+                                          is its smallest model's; empty is its largest model's),
+                                          compact (where Codex and Claude Code compact a conversation on it: 200k;
+                                          empty leaves it to its models' and Long conversations), levels (the reasoning levels agents are offered:
                                           levels=none,low,medium,high,xhigh,max; empty is those every model has —
                                           a model without the one asked is sent its nearest),
                                           family (a tag: magpie visible shows agents families, not each group),
@@ -39,6 +43,8 @@ const groupUsage = `usage:
                                           counting; empty is the 0.4 groups have always asked),
                                           pick=<model> (routing=manual, every request to that one of its models),
                                           fast=<m1>[,m2…] (the models sent in their vendor's fast mode; empty for none),
+                                          ultra=<m1>[,m2…] (those of them sent in the faster Ultrafast mode of a ChatGPT
+                                          account that offers it, priority otherwise; each is made fast too; empty for none),
                                           weight=<m1>=<n>[,m2=<n>…] (each model's share under routing=weight,
                                           1 to 1000; a model not named keeps its own, 1 by default; empty for all 1),
                                           listed=no (its models leave the lists agents see, offered through the
@@ -444,7 +450,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 			// the whole list, patterns too: what the old ones matched goes
 			g.Members, err = members(v)
 			g.Match, g.Matched = patterns, nil
-			g.Fast = nil // the list as typed: :fast on those sent fast
+			g.Fast, g.Ultra = nil, nil // the list as typed: :fast on those sent fast
 		case "models+", "members+", "model+":
 			var add []string
 			if add, err = members(v); err == nil {
@@ -513,6 +519,15 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 			default:
 				g.Context, err = parseTokens(v)
 			}
+		case "compact", "compact-at":
+			// where Codex and Claude Code compact a conversation on the
+			// group; empty or 0 leaves it to its members' and Settings'
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "", "default", "off":
+				g.Compact = 0
+			default:
+				g.Compact, err = parseTokens(v)
+			}
 		case "levels", "level":
 			// the reasoning levels agents are offered; empty is those every
 			// member has again
@@ -522,6 +537,8 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 			}
 		case "family", "tag":
 			g.Family = strings.TrimSpace(v)
+		case "note", "description", "desc", "remark":
+			g.Note = provider.CleanNote(v)
 		case "listed":
 			// no: the models in it leave the lists agents see (#1783)
 			switch strings.ToLower(strings.TrimSpace(v)) {
@@ -570,6 +587,18 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 				}
 				g.Fast = append(g.Fast, id)
 			}
+		case "ultra":
+			// the fast members sent in the faster mode: each named is fast
+			// too, the rest are not ultra
+			g.Ultra = nil
+			for _, m := range splitIDs(v, inGroup(g.Members)) {
+				m, _ = provider.MemberFast(m)
+				id, perr := pickMember(g.Members, m)
+				if perr != nil {
+					return perr
+				}
+				g.SetMemberTier(id, "ultrafast")
+			}
 		case "weight", "weights":
 			// each member's share when the group routes by weight (#1910):
 			// those named, the rest kept; empty for every one 1 again
@@ -601,7 +630,7 @@ func applyGroupPairs(g *provider.Group, pairs []string, resolve func(string) (st
 			g.Pick, err = pickMember(g.Members, v)
 			g.Routing = provider.Manual
 		default:
-			return fmt.Errorf("unknown field %q (fields: name, models, models+, models-, routing, pick, stays, context, levels, family, effort, classifier, intent-sure, fast, weight, listed; magpie group help)", k)
+			return fmt.Errorf("unknown field %q (fields: name, note, models, models+, models-, routing, pick, stays, context, levels, family, effort, classifier, intent-sure, fast, weight, listed; magpie group help)", k)
 		}
 		if err != nil {
 			return err
@@ -1113,11 +1142,11 @@ func groups() error {
 			names[e.ID] = e // a group in a group is served when it is
 		}
 	}
-	type row struct{ name, id, how, members, uses string }
+	type row struct{ name, id, how, members, uses, note string }
 	var rows []row
 	w := [3]int{}
 	for _, g := range shown {
-		r := row{name: bold.Render(g.Name), id: muted.Render(g.Ref())}
+		r := row{name: bold.Render(g.Name), id: muted.Render(g.Ref()), note: g.Note}
 		if g.Auto {
 			r.name += " " + faint.Render("found")
 		}
@@ -1173,6 +1202,9 @@ func groups() error {
 	}
 	for _, r := range rows {
 		fmt.Printf("  %s  %s  %s  %s%s\n", pad(r.name, w[0]), pad(r.id, w[1]), pad(r.how, w[2]), r.members, r.uses)
+		if r.note != "" {
+			fmt.Printf("  %s\n", muted.Render(r.note)) // the user's own word on it, under its row
+		}
 	}
 	var ids []string
 	for _, g := range hidden {
@@ -1201,6 +1233,9 @@ func showGroup(g provider.Group) error {
 		head += amber.Render("  removed") + muted.Render(" · magpie group restore "+g.ID)
 	}
 	fmt.Println(" ", head)
+	if g.Note != "" {
+		kv("note", g.Note)
+	}
 	if g.Routing == provider.Manual {
 		kv("routing", "manual"+muted.Render("  every request to "+g.Picked()+"; magpie group pick "+g.ID+" <model> picks another"))
 	} else {
@@ -1221,7 +1256,9 @@ func showGroup(g provider.Group) error {
 			line = green.Render(fmt.Sprintf("%d %s ●", i+1, typedMember(g, id)))
 		}
 		if l, ok := memberLabel(id, names); ok {
-			if g.IsFast(id) {
+			if g.IsUltra(id) {
+				l += " · ultrafast"
+			} else if g.IsFast(id) {
 				l += " · fast"
 			}
 			if g.Routing == provider.Weighted {

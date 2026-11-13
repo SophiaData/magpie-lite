@@ -173,9 +173,30 @@ record by its own model and keys its day and model rows by the alias, and
 [`alias.go`](../../internal/sessions/alias.go)) merge a native session's rows
 the same way, into new slices so the memo is never changed. The alias is read
 before any lock, and an unreadable settings.json keeps the last aliases read.
-Requests, the Requests ledger and model lists keep each call's own id.
+Found routing groups are also merged under their public `auto/<model>` id
+by this mapper: a native file or old usage row naming `group/auto-<slug>`
+and one naming `auto/<model>` form one model option. Vendor spellings of
+`auto/<model>` follow `PublicRef`; effort and `[1m]` suffixes are preserved.
+The mapping is a snapshot taken before usage locks and before grouping,
+so lists (`ListAgent` and `Manage` too), details, daily stats, summaries,
+filtered overviews and Codex's model/effort rows agree. Original parses,
+ledger rows and prices stay intact.
+An unavailable group or a user's pre-existing provider named `auto` keeps
+its original names. User usage aliases are applied after public spelling.
+`UsageNamesKey` invalidates named caches when the group catalog changes.
+
+Requests keep their original priced model ids internally; their model shares,
+chart legends and model filters treat both routing-group ids as one (the
+filter's model is made the kept `group/auto-…` once, in `usageapi.FilterOf`,
+so only an `auto/…` record reads the providers), and
+`usageapi.LedgerPage` displays the public spelling for both `model` and `req`.
+This does not apply user usage aliases to Requests. A clear made under either
+group id covers both spellings. Model lists continue to use the catalog ids.
 Verification: `TestUsageAliasCountsTwoIdsAsOne`,
-`TestSessionsCountAliasedModelsAsOne`, `TestAliasStatsLeavesItsInputAlone`.
+`TestSessionsCountAliasedModelsAsOne`, `TestAliasStatsLeavesItsInputAlone`,
+`TestSessionsFoundGroupNames`, `TestSessionsAPIFoundGroupNames`,
+`TestUsageFoundGroupNames`, `TestCodexEffortFoundGroupNames`,
+`TestLedgerFoundGroupNames`.
 
 The Usage page can clear its figures (CrazyMouse_TT on X): a model's row's
 "…" has "Clear usage…", and "Clear all usage…" sits under the lists. Each
@@ -198,6 +219,15 @@ of the same model or of everything takes an earlier one's place. Usage ›
 Sessions is not cleared. Verification: `TestClearedUsageLeavesThePages`,
 `TestClearUsageKeepsOneMarkAModel`, `TestUsageClearRoute`,
 `usage-clear.test.cjs`.
+
+Claude Code's sessions are read from every folder it is run in
+(`appdir.ClaudeHomes`, `sessions.ClaudeDirs`): `$CLAUDE_CONFIG_DIR` or
+`~/.claude`, a folder beside it or in the home folder whose name starts with
+`claude` or `.claude` (or one level down) and holds `projects/`, and the
+folders of the Claude accounts saved in magpie. A session id kept in two of
+them is one session, under the first. Verification:
+`TestClaudeHomesIn`, `TestCallsReadEveryClaudeFolder`,
+`TestListReadsEveryClaudeFolderOnce`.
 
 Claude Desktop gateway rows can have a local name even without a CLI
 transcript (#1675). [`DesktopTitles`](../../internal/sessions/desktop_titles.go)
@@ -229,6 +259,21 @@ A ZCode request names its session without the `sess_` prefix ZCode's
 database gives it, so `Titles` looks a `zcode:` key up under both and
 answers under the id asked for (#5195). Verification:
 `TestZCodeTitlesByRequestID`.
+
+The calls read from ZCode's database name their session the same way
+(`readZCodeCalls`, `zcodeBareID`). The Usage page pairs a gateway record with
+the session file's call by session, tokens and end time, so under `sess_…` a
+call magpie had routed was counted again as a local session's whatever
+provider id ZCode wrote beside it (nori_tsukiji on X). Verification:
+`TestZCodeCallsPairWithTheGatewaysRecords`.
+
+A ZCode session's name is the app's: its task index
+(`v2/tasks-index.sqlite` in the data folder, `tasks.title` by `task_id`,
+the session's id) holds what the app shows and what the user renamed it to,
+and the CLI database's title is a guess or the default. `zcodeTaskOf`
+(`zcode_tasks.go`) overlays it on `zcDB.info`, and the task's `updated_at`
+counts toward the file's time so a rename is read again. Verification:
+`TestZCodeTitleIsTheAppsTaskName`.
 
 Routing's stage names the session an account is serving (connor_yang on
 Discord): a row answering, or that answered, the request shown adds that
@@ -284,6 +329,14 @@ list the session), and `HasGatewayConversations` counts it.
 Implementation: [`internal/sessions/gateway_delete.go`](../../internal/sessions/gateway_delete.go),
 `Restore` in [`internal/sessions/manage.go`](../../internal/sessions/manage.go), and
 [`internal/gui/sessions_manage.go`](../../internal/gui/sessions_manage.go).
+An agent whose sessions magpie cannot delete (OpenCode, Cline, Grok, Kimi, Hermes:
+rows in the agent's own database or store) and whose command is no longer on
+PATH (`cliGone`) is forgettable (_SekiBetu_ on X): its rows get Delete, which
+only hides them through the same hidden list (`sessions.Forget`, trash note
+marked `forgot`; the agent's own files are not touched), and no Resume
+(`resumeFor`). Restore unhides. With the command installed nothing changes.
+Tests: `TestUninstalledAgentSessionsAreForgotten`,
+`TestManageDeleteOfAnUninstalledAgentTakesItOffTheList`, `sessions-forget.test.cjs`.
 A deleted Codex session also leaves the Codex app's list (zhuddan on Discord).
 The app (ChatGPT.app's Codex, 26.x) lists threads from its own catalog,
 `<CODEX_HOME>/sqlite/codex.db` (`codex-dev.db` for a non-prod build), table
@@ -354,8 +407,16 @@ at the value its row shows) and a row per agent.
 `magpie sessions read [on|off all|<agent>…]` shows and changes the same
 choice from the CLI (`sessionReadsTo`); while it is not asked,
 `magpie sessions` says so on stderr and the TUI's empty Sessions page
-says how (`sessNothing`). Tests: `TestSessionsRead`,
-`TestSessionsNotAskedSaysHow`.
+says how (`sessNothing`). With no provider set up, Claude Code's and Codex's sessions, and each
+call's tokens and duration, need only this consent: the session files are
+the source (`/api/usage/requests` rows with `source: "log"`, the speed a
+call's tokens over its time gives, shown as a floor). An empty Usage
+Overview or Requests page says so while `asked` is false and offers the
+agents found with one button (`readsNote` in the usage plugin's
+`page.js`; simonzyzy on X), and the Sessions page says the live output
+speed curve is measured only on requests through the gateway
+(`sm-speed-note`). Tests: `TestSessionsRead`,
+`TestSessionsNotAskedSaysHow`, `usage-reads-note.test.cjs`.
 
 In gateway mode (`magpie web`'s page, [`gatewaymode.go`](../../internal/gui/gatewaymode.go))
 no agent's own session files are read, whatever `SessionReads` says
@@ -828,7 +889,7 @@ one record or an array of up to 5000 (32 MiB at most), in `usage.jsonl`'s
 shape: `t`, `agent`, `provider`, `model` and `rid` are required; `in`,
 `out`, `cache_read`, `cache_write`, `cache_write_1h`, `reasoning`, `ms`,
 `ttft_ms`, `first_text_ms`, `flow_ms`, `status`, `cost`, `effort`,
-`session` and `err` are optional.
+`session`, `err`, `req` and `served` are optional.
 Any other field, a quoted number, a negative or out-of-range count, a time
 more than an hour ahead or before 2000-01-01T00:00:00Z refuses the whole
 post with a 400 that names the record (`error.index`) and the field
@@ -851,6 +912,13 @@ however old, so a client's history can be backfilled.
   was appended since. The reply counts `accepted` and `skipped` and gives
   each record's `index`, `rid` and `status`, so a re-run of a batch is
   safe.
+- **Asked and answered:** `req` and `served` (#3534) are `Record.Requested`
+  and `Record.Served`, the Requests page's requested and served model:
+  what the client asked for (an alias, a group) and what its vendor's
+  reply said answered. Each is checked as `model` is (a string, at most
+  256 characters, no control characters) and kept only as sent; a record
+  without `served` says nothing of what answered, so it is never filled
+  from `model`. `TestUsageIngestRequestedAndServed`.
 - **Pricing:** a record with `cost` keeps it (`Record.OwnCost`, the
   `rowOwnCost` flag on a packed row). Without one it is priced at magpie's
   own prices, like a gateway row.
@@ -920,6 +988,27 @@ arguments are never kept, not even masked.
   server, the Requested cell the tool, and the status Succeeded or
   Failed. The Purpose filter names `kind:mcp` "MCP tool"
   (`purposeKinds`, `purposes.js`).
+
+### Claude Code's helper requests and the largest cache write
+
+Claude Code's AgentSummary ("Describe your most recent action in 3-5
+words.") and its auto mode classifier name themselves nowhere in the
+request, so `inferredKind` (observe.go) tells them by their content, for
+a `claude-cli/` request on the Messages API only, and the ledger row's
+Kind is `agent_summary_inferred` or `auto_mode_check_inferred`
+(`usage.InferredSuffix`). The name says "(inferred)"; both spellings share
+the plain kind's purpose, which a client marker would use. Anything else
+stays unmarked.
+
+A requests page also holds `BigWrite` (big_write.go): the gateway-served
+row that wrote the most to the cache, kept per chunk (`chunkPart.big`) and
+merged as the cells are. Rows read from session files have no request to
+open and are left out. The Requests line shows it as a button that opens
+that request (`openUsageRoute`). The counting is keyed by
+`settledCountVersion`. `TestRequestPageBigWrite`,
+`TestClaudeHelperRequestsAreLabelled` and `usage-big-write.test.cjs`
+cover it. The per-request branch recovery result asked for in #6199 is not
+recorded: no structured field holds it.
 
 `TestMCPToolCallIsARequestRow`, `TestMCPHubCallIsARequestRow`,
 `TestMCPCalledFromStdioIsARow` and the others in `mcp_calls_test.go`,
@@ -1199,3 +1288,35 @@ row's model, usage, cost and kind.
 Compaction is already included in Codex's total consumption, so this marker
 does not add tokens or cost. This is Codex-only; Claude behavior and the POST
 `/v1/magpie/usage/requests` ingest allowlist are unchanged.
+
+### The request feed
+
+`GET /v1/magpie/usage/requests?cursor=` (#6060, rdsaltbo on X) reads the
+ledger as changes for a program keeping a ledger of its own. The contract is
+in [reference.md](../reference.md); the code is
+[`internal/usage/feed.go`](../../internal/usage/feed.go) (state and ids) and
+[`internal/usageapi/feed.go`](../../internal/usageapi/feed.go) (the shape).
+
+- **Ids.** `feedKey` makes a row's id from fields its record never mends
+  (time, route, session, the ids it carries), not from a name the user can
+  rename or a figure that is mended; `feedID` hashes it, with a count for two
+  identical lines. A native row is keyed by what the agent's file gave
+  (`Record.MessageID` comes from the call's `Msg` and is not persisted).
+  Adding a field to a key changes every id: don't.
+- **Changes.** Every read runs the whole-ledger `LedgerOfAt(All, …)` (memo
+  only for the next page of a read that had more), compares each id's
+  `feedVersion` (tokens, outcome, names; not the price) with the journal's,
+  and gives each new or changed id the next `seq`; an id no longer in the
+  ledger becomes a tombstone (a native row matched to a gateway row, a
+  clear). A native call a file brings late is just a new id.
+- **Journal.** `usage-feed.jsonl` next to `usage.jsonl`: a header (epoch,
+  floor, seq) and one appended, synced line per change, written before the
+  read answers so a cursor is never ahead of the file. A torn last line is
+  dropped; a bad line elsewhere is a new epoch (`cursor_reset`). Tombstones
+  older than `FeedKeep` (30 days) are dropped, the floor raised, and a cursor
+  under the floor is `cursor_expired`.
+- **Cost.** A read costs a ledger read; poll in minutes. Not tried: a very
+  long history (700k+ requests) on the first read, and the journal's size.
+- **Scope.** A cursor carries a fingerprint of its filter and key. A held key
+  sees its own rows and tombstones only. `TestUsageRequestsFeedOverGateway`
+  and the `TestFeed…` tests in `internal/usage/feed_test.go` guard these.

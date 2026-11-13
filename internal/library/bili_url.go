@@ -48,10 +48,31 @@ type biliURLLane struct {
 // zedThrough is agent.ZedThrough; a var for tests, which save no key.
 var zedThrough = agent.ZedThrough
 
+// Hermes has a plugin of bili's (bili plugin install hermes), but it
+// routes Hermes's traffic by setting HTTPS_PROXY in Hermes's process
+// alone (hermes-plugin/__init__.py apply_env), and magpie's provider is at
+// http://127.0.0.1, which that never takes: the plugin would add its
+// tools while nothing folds. So Hermes goes through the /bili/ prefix as
+// Zed does: agent.HermesThrough puts the base_url of magpie's entries, in
+// every profile that has them, behind it, which a sync and a pick keep
+// (Duckb7si on X).
+
 var biliURLLanes = map[string]biliURLLane{
 	"zed": {
 		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.ZedURL(a), biliPrefix) },
 		set: func(a *agent.Agent, prefix string) error { return zedThrough(a, prefix) },
+	},
+	"hermes": {
+		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.HermesURL(a), biliPrefix) },
+		set: agent.HermesThrough,
+	},
+	// dsh's own plugin for bili (dsh plugin add billion-context) rides proxy
+	// settings of dsh's process, which magpie's http://127.0.0.1 route never
+	// takes; its route's baseURL is editable, so it goes through the prefix
+	// as Hermes does, in every profile (VantH_off on X).
+	"dsh": {
+		on:  func(a *agent.Agent) bool { return strings.HasPrefix(agent.DshURL(a), biliPrefix) },
+		set: agent.DshThrough,
 	},
 }
 

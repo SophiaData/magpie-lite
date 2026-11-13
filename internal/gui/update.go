@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -32,6 +33,9 @@ type updater struct {
 	mu     sync.Mutex
 	state  string // checking | latest | found | downloading | ready | available | source | error | blocked
 	latest *update.Release
+	// behind: since when a newer version has been out for this one, and
+	// whether it is urgent; the pill waits for it (update.Behind)
+	behind update.Behind
 	err    string
 	bundle string // the .app to replace, "" when not in one or stuck
 	stuck  string // why the .app or binary can't be replaced where it is (update.Stuck, exeStuck)
@@ -78,11 +82,15 @@ type updater struct {
 	// waitMost first (gaveUp). onWait tells the tray what it waits on.
 	waiting  bool
 	waitFrom time.Time
-	waitGen  int
-	gaveUp   bool
-	whenIdle func() bool
-	onWait   func()
-	loops    sync.WaitGroup // the waits going on
+	// drainMost, with a wait `magpie update` armed: past it the restart
+	// goes ahead whatever is in flight (restartDrain); 0 waits as long as
+	// waitMost
+	drainMost time.Duration
+	waitGen   int
+	gaveUp    bool
+	whenIdle  func() bool
+	onWait    func()
+	loops     sync.WaitGroup // the waits going on
 	// With Settings' AutoRestart, the clock has autoRestart run (the app's
 	// or magpie web's restart) once a downloaded update is ready and the
 	// gateway idle (#2096); autoSkip is the version whose wait the user
@@ -133,7 +141,12 @@ type updateJSON struct {
 	Speed int64  `json:"speed,omitempty"`
 	// blocked: the version this computer wouldn't start, and why (#894)
 	Blocked *update.Blocked `json:"blocked,omitempty"`
-	Total   int64           `json:"total,omitempty"`
+
+	// Quiet: a newer version is out but this one has not been behind long
+	// enough, and none is urgent, so the header's pill stays out (the
+	// Version row and Restart to update still offer it)
+	Quiet bool  `json:"quiet,omitempty"`
+	Total int64 `json:"total,omitempty"`
 	// found: the size of the file Download update would fetch, in bytes
 	// (0 when the feed doesn't say)
 	Size int64 `json:"size,omitempty"`
@@ -147,38 +160,31 @@ type updateJSON struct {
 	// (handover.go): Busy is then the Claude subscription's turns alone,
 	// every other request finishing as the new version takes the next
 	Handover bool `json:"handover,omitempty"`
+	// Using, a restart by itself waits for the user to stop using a
+	// window (inUseAt)
+	Using bool `json:"using,omitempty"`
 }
 
 var updates = &updater{}
-
-// autoUpdatesDisabled keeps this build from ever asking for a newer
-// version by itself: no start-up check, no clock, no download, no restart.
-// The version row's Check and `magpie update` still work, so an update is
-// the user's own move.
-const autoUpdatesDisabled = update.AutoUpdateDisabled
 
 // updateDue is whether the feed is asked by itself now, the last time it
 // was asked at last: never with automatic updates off, otherwise once the
 // settings' interval is up. The settings are read again each minute, so
 // one changed (in Settings or the CLI) counts from the last check.
 func updateDue(s settings.Settings, last, now time.Time) bool {
-	if autoUpdatesDisabled {
-		return false
-	}
 	return !s.NoAutoUpdate && now.Sub(last) >= time.Duration(s.UpdateEvery)*time.Minute
 }
 
 func (u *updater) start() {
+	u.behind = update.ReadBehind(Version)
 	u.place(runtime.GOOS, update.GUI)
-	gateway.SetRestarter(u.restartBeside)               // magpie update in a terminal
+	gateway.SetRestarter(u.restartBesideAsked) // magpie update in a terminal
+	gateway.SetForceRestarter(u.restartBesideNow)
 	gateway.SetUpdater(u.updateAsked)                   // a magpie using this one updated
 	go provider.KeepRemotesUpdated(backendCtx, Version) // and this one's remotes
 	go u.followReplaced(backendCtx)                     // the app's or magpie web's update (visamzh on X)
 	if u.bundle != "" {
 		go update.ForgetOldStaging(u.bundle) // #3965
-	}
-	if autoUpdatesDisabled {
-		return
 	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
@@ -395,7 +401,7 @@ func (u *updater) latestStale() bool {
 // stale "latest", unless automatic updates are off. It doesn't wait for
 // the answer: the row shows checking, and reads again.
 func (u *updater) refreshLatest(s settings.Settings) {
-	if autoUpdatesDisabled || s.NoAutoUpdate {
+	if s.NoAutoUpdate {
 		return
 	}
 	u.mu.Lock()
@@ -496,6 +502,14 @@ func (u *updater) run() {
 		return
 	}
 	u.latest, u.notesIn, u.stable = rel, lang, stable
+	if update.Released(Version) && update.Newer(rel.Version, Version) {
+		u.behind = update.NoteBehind(Version, rel.Version, update.UrgentIn(rel.Notes), time.Now())
+		if u.behind.Urgent == "" {
+			// an urgent release between this one and the latest: its
+			// notes aren't the latest's
+			go u.urgentBetween(rel.Version, lang)
+		}
+	}
 	switch {
 	case !update.Released(Version):
 		u.state = "source"
@@ -690,11 +704,16 @@ func (u *updater) jsonIn(lang string) updateJSON {
 	if u.state == "blocked" {
 		j.Blocked = u.blocked
 	}
+	switch j.State {
+	case "ready", "found", "available":
+		j.Quiet = !u.behind.Lit(Version, time.Now())
+	}
 	if u.state == "found" && u.latest != nil {
 		j.Size = u.assetSize(u.latest)
 	}
 	if j.State == "ready" || u.waiting {
 		j.Waiting, j.GaveUp = u.waiting, u.gaveUp && !u.waiting
+		j.Using = u.waiting && !u.waitAsked && inUseAt(time.Now())
 		j.Handover = handover
 		if busy.Any() {
 			j.Busy = &busy
@@ -705,6 +724,34 @@ func (u *updater) jsonIn(lang string) updateJSON {
 		j.Latest, j.Notes, j.URL = u.latest.Version, update.StripInstall(u.latest.Notes), u.latest.URL
 	}
 	return j
+}
+
+// urgentBetween notes it when a release after this one up to latest is
+// urgent: a security fix a few releases back isn't in the latest's notes.
+func (u *updater) urgentBetween(latest, lang string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	notes, err := update.NotesBetween(ctx, Version, latest, lang)
+	if err != nil {
+		return
+	}
+	for _, n := range notes {
+		if update.UrgentIn(n.Notes) {
+			b := update.NoteUrgent(Version, n.Version, time.Now())
+			u.mu.Lock()
+			u.behind = b
+			u.mu.Unlock()
+			return
+		}
+	}
+}
+
+// quietAgain starts the pill's quiet over: it was dismissed.
+func (u *updater) quietAgain() {
+	b := update.QuietAgain(Version, time.Now())
+	u.mu.Lock()
+	u.behind = b
+	u.mu.Unlock()
 }
 
 // inLang has the next checks ask for the notes in lang ("" leaves it).
@@ -737,6 +784,16 @@ func (u *updater) relang(version, lang string) {
 }
 
 func updateRoutes(mux *http.ServeMux, w Windows) {
+	// a page's word of the user's input, which a restart by itself waits
+	// for to end (inUseAt); open: a dialog is open
+	mux.HandleFunc("POST /api/update/using", func(rw http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Open bool `json:"open"`
+		}
+		json.NewDecoder(io.LimitReader(r.Body, 1<<10)).Decode(&b)
+		noteUse(b.Open, time.Now())
+		rw.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /api/update", func(rw http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("fresh") == "1" { // the Version row
 			updates.refreshLatest(settings.Load())
@@ -874,14 +931,15 @@ func restartFrom(w Windows, view string) bool {
 // Off the Mac, the new one opens its window on view when window is set, and
 // only the tray icon when not; the Mac's always opens its window.
 func restartToUpdate(web, window bool, view string) bool {
-	return restartInto(web, window, view, false)
+	return restartInto(web, window, view, false, false)
 }
 
 // restartInto is restartToUpdate; bySelf, Settings' AutoRestart restarts
 // (#2096), and the Mac's new one too opens only its menu bar icon when no
 // window was up, rather than putting up one the user had closed. The new
-// one, by itself, also takes no focus (quiet_restart.go).
-func restartInto(web, window bool, view string, bySelf bool) bool {
+// one, by itself, also takes no focus (quiet_restart.go), and puts the
+// window back minimised when it was (minimised, #3495).
+func restartInto(web, window bool, view string, bySelf, minimised bool) bool {
 	if pending.Load() != nil {
 		return false // a handover under way restarts already
 	}
@@ -897,7 +955,7 @@ func restartInto(web, window bool, view string, bySelf bool) bool {
 	}
 	updatedInApp(version) // its first start leaves the notes to Settings (#525)
 	if bySelf && !web {
-		markQuietRestart() // it comes back without taking focus
+		markQuietRestart(window && minimised) // it comes back without taking focus
 	} else {
 		unmarkQuietRestart() // one asked for comes to the front
 	}
