@@ -28,6 +28,11 @@ var sourceDigestsDisk struct {
 	path  string     // where kept was read from
 	kept  digestList // as read: no map of 17k entries beside sourceDigests'
 	dirty bool       // a digest was made that isn't on disk
+	// mapped holds the file kept is read from, where the system maps
+	// files: its pages are the file's, not the heap's, and a lookup
+	// touches a few of them. The file is 40 bytes a digest, up to
+	// 2*sourceDigestsKept of them (5MB), each kept in the heap before.
+	mapped *diskMapping
 }
 
 // sourceDigestsHashed counts the chunks sourceDigest hashed, for tests.
@@ -52,17 +57,23 @@ func (l digestList) at(i int) (uint64, []byte) {
 	return binary.LittleEndian.Uint64(e), e[8:]
 }
 
-func (l digestList) get(serial uint64) (sum [sha256.Size]byte, ok bool) {
+// find is serial's index in l.
+func (l digestList) find(serial uint64) (int, bool) {
 	i := sort.Search(l.len(), func(i int) bool { s, _ := l.at(i); return s >= serial })
 	if i == l.len() {
-		return sum, false
+		return i, false
 	}
-	s, b := l.at(i)
-	if s != serial {
-		return sum, false
+	s, _ := l.at(i)
+	return i, s == serial
+}
+
+func (l digestList) get(serial uint64) (sum [sha256.Size]byte, ok bool) {
+	i, ok := l.find(serial)
+	if ok {
+		_, b := l.at(i)
+		copy(sum[:], b)
 	}
-	copy(sum[:], b)
-	return sum, true
+	return sum, ok
 }
 
 // sourceDigestsLoad reads the kept digests, once for each place they are
@@ -74,11 +85,33 @@ func sourceDigestsLoad() {
 		return
 	}
 	sourceDigestsDisk.path, sourceDigestsDisk.kept, sourceDigestsDisk.dirty = p, nil, false
+	sourceDigestsDisk.mapped = nil
+	if m, ok := mapDiskFile(p); ok {
+		if l := decodeSourceDigests(m.data, requestDiskBinary()); l != nil {
+			sourceDigestsDisk.kept, sourceDigestsDisk.mapped = l, m
+		}
+		return
+	}
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return
 	}
 	sourceDigestsDisk.kept = decodeSourceDigests(b, requestDiskBinary())
+}
+
+// keepMapped reads kept again from p as just written, mapped: the bytes
+// encoded are let go of. Kept as encoded when the file isn't b (another
+// write since) or can't be mapped. Under sourceDigests' lock.
+func keepMapped(p string, b []byte) {
+	if sourceDigestsDisk.path != p || len(sourceDigestsDisk.kept) == 0 || &sourceDigestsDisk.kept[0] != &b[len(b)-len(sourceDigestsDisk.kept)] {
+		return // kept is no longer what b holds
+	}
+	m, ok := mapDiskFile(p)
+	if !ok || !bytes.Equal(m.data, b) {
+		return
+	}
+	sourceDigestsDisk.kept = decodeSourceDigests(m.data, requestDiskBinary())
+	sourceDigestsDisk.mapped = m
 }
 
 // decodeSourceDigests is b's digests when b was written for code, nil
@@ -104,9 +137,11 @@ func decodeSourceDigests(b []byte, code string) digestList {
 	return l
 }
 
-// encodeSourceDigests writes the sets' digests and kept's for code, the
-// first set's first, at most limit of them.
-func encodeSourceDigests(code string, limit int, kept digestList, sets ...map[uint64][sha256.Size]byte) []byte {
+// encodeSourceDigests writes, for code, the digests of the serials the
+// sets name, the first set's first, then the rest of kept's, at most limit
+// of them. A serial's digest is made's, or kept's; one in neither is left
+// out.
+func encodeSourceDigests(code string, limit int, kept digestList, made map[uint64][sha256.Size]byte, sets ...map[uint64]struct{}) []byte {
 	type one struct {
 		serial uint64
 		sum    []byte
@@ -114,10 +149,17 @@ func encodeSourceDigests(code string, limit int, kept digestList, sets ...map[ui
 	var all []one
 	seen := map[uint64]bool{}
 	for _, s := range sets {
-		for serial, sum := range s {
-			if !seen[serial] && len(all) < limit {
+		for serial := range s {
+			if seen[serial] || len(all) >= limit {
+				continue
+			}
+			if sum, ok := made[serial]; ok {
 				seen[serial] = true
 				all = append(all, one{serial, append([]byte(nil), sum[:]...)})
+			} else if i, ok := kept.find(serial); ok {
+				seen[serial] = true
+				_, sum := kept.at(i)
+				all = append(all, one{serial, sum})
 			}
 		}
 	}
@@ -160,7 +202,11 @@ func sourceDigestsSave() {
 	// this run's first, then those kept from before it it hasn't met (a
 	// query of a few files keeps the rest): a file gone falls out once
 	// two turns' worth are made
-	b := encodeSourceDigests(requestDiskBinary(), 2*sourceDigestsKept, sourceDigestsDisk.kept, d.by, d.last)
+	code := requestDiskBinary()
+	b := encodeSourceDigests(code, 2*sourceDigestsKept, sourceDigestsDisk.kept, d.made, d.by, d.last)
+	// what is written is what is kept: the digests made are in it
+	sourceDigestsDisk.kept = decodeSourceDigests(b, code)
+	d.made = nil
 	p := sourceDigestsDisk.path
 	w := &sourceDigestWrites
 	w.made++
@@ -172,18 +218,25 @@ func sourceDigestsSave() {
 		return
 	}
 	w.wrote = gen
-	writeFileRenamed(p, b)
+	if !writeFileRenamed(p, b) || !mapsFiles {
+		return
+	}
+	d.Lock()
+	keepMapped(p, b)
+	d.Unlock()
 }
 
 // writeFileRenamed writes b to p through a temp file renamed over it.
-func writeFileRenamed(p string, b []byte) {
+// It reports whether p is b now.
+func writeFileRenamed(p string, b []byte) bool {
+	saveAsks() // the asks its rows were made of first (catalogBase)
 	dir := filepath.Dir(p)
 	if os.MkdirAll(dir, 0o700) != nil {
-		return
+		return false
 	}
 	tmp, err := os.CreateTemp(dir, ".heat-digests-*")
 	if err != nil {
-		return
+		return false
 	}
 	_, err = tmp.Write(b)
 	if cerr := tmp.Close(); err == nil {
@@ -191,5 +244,7 @@ func writeFileRenamed(p string, b []byte) {
 	}
 	if err != nil || os.Rename(tmp.Name(), p) != nil {
 		os.Remove(tmp.Name())
+		return false
 	}
+	return true
 }

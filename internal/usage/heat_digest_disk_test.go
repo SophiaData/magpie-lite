@@ -25,8 +25,8 @@ func TestSourceDigestsKeptAcrossStarts(t *testing.T) {
 	}
 	restart := func() {
 		sourceDigests.Lock()
-		sourceDigests.by, sourceDigests.last = nil, nil
-		sourceDigestsDisk.path, sourceDigestsDisk.kept = "", nil
+		sourceDigests.by, sourceDigests.last, sourceDigests.made = nil, nil, nil
+		sourceDigestsDisk.path, sourceDigestsDisk.kept, sourceDigestsDisk.mapped = "", nil, nil
 		sourceDigests.Unlock()
 	}
 	key := func(cs ...*rowChunk) (string, int) {
@@ -46,9 +46,30 @@ func TestSourceDigestsKeptAcrossStarts(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("a first start hashed %d chunks, want 2", n)
 	}
+	// the same run again: what was made is kept, not hashed again
+	if again, n := key(chunk(1<<63|1, 10), chunk(1<<63|2, 20)); n != 0 || again != first {
+		t.Fatalf("same run, hashed %d chunks, key %s, was %s", n, again, first)
+	}
+	sourceDigests.Lock()
+	if len(sourceDigests.made) != 0 || sourceDigestsDisk.kept.len() != 2 {
+		t.Fatalf("after a save: %d made, %d kept", len(sourceDigests.made), sourceDigestsDisk.kept.len())
+	}
+	if mapsFiles && sourceDigestsDisk.mapped == nil {
+		t.Fatal("after a save the digests are kept as encoded, not from the file written")
+	}
+	sourceDigests.Unlock()
 	restart()
 	if again, n := key(chunk(1<<63|1, 10), chunk(1<<63|2, 20)); n != 0 || again != first {
 		t.Fatalf("started again, hashed %d chunks, key %s, was %s", n, again, first)
+	}
+	// what was read is the file mapped, not a copy in the heap
+	if mapsFiles {
+		sourceDigests.Lock()
+		m, kept := sourceDigestsDisk.mapped, sourceDigestsDisk.kept
+		sourceDigests.Unlock()
+		if m == nil || kept.len() != 2 || &kept[0] != &m.data[len(m.data)-len(kept)] {
+			t.Fatalf("kept %d digests, mapped %v: not read from the mapped file", kept.len(), m != nil)
+		}
 	}
 	// a start that met one file keeps the other's for the next
 	restart()
@@ -69,7 +90,7 @@ func TestSourceDigestsKeptAcrossStarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := encodeSourceDigests(requestDiskBinary()+"x", 10, decodeSourceDigests(b, requestDiskBinary()))
+	other := encodeSourceDigests(requestDiskBinary()+"x", 10, decodeSourceDigests(b, requestDiskBinary()), nil)
 	if decodeSourceDigests(b, requestDiskBinary()).len() != 3 {
 		t.Fatalf("kept %d, want 3", decodeSourceDigests(b, requestDiskBinary()).len())
 	}
@@ -91,7 +112,12 @@ func TestSourceDigestsKeptAcrossStarts(t *testing.T) {
 		t.Fatalf("no code: %v", got)
 	}
 	var sum [sha256.Size]byte
-	if got := decodeSourceDigests(encodeSourceDigests("c", 1, nil, map[uint64][sha256.Size]byte{1: sum, 2: sum}), "c"); got.len() != 1 {
-		t.Fatalf("limit 1 kept %d", len(got))
+	made := map[uint64][sha256.Size]byte{1: sum, 2: sum}
+	if got := decodeSourceDigests(encodeSourceDigests("c", 1, nil, made, map[uint64]struct{}{1: {}, 2: {}}), "c"); got.len() != 1 {
+		t.Fatalf("limit 1 kept %d", got.len())
+	}
+	// a serial used with no digest made or kept is left out
+	if got := decodeSourceDigests(encodeSourceDigests("c", 9, nil, map[uint64][sha256.Size]byte{1: sum}, map[uint64]struct{}{1: {}, 2: {}}), "c"); got.len() != 1 {
+		t.Fatalf("kept %d, want 1", got.len())
 	}
 }
