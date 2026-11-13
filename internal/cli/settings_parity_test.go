@@ -239,6 +239,7 @@ var cliForRoute = map[string]string{
 }
 
 var notYet = map[string]string{
+	"GET /api/usage/checkins/off":                W,  // added by sync-upstream: the window's own
 	"POST /api/agent-fast":                       A,  // agent_models.go
 	"POST /api/agent-models/{id}":                A,  // agent_models.go
 	"GET /api/agents/cli":                        A,  // api.go
