@@ -188,7 +188,7 @@ const usage = `magpie — one place to pick every agent's model
                                   wrote down (a service started with MAGPIE_ADDR needs none of them); a restart waits at most 10
                                   minutes for requests in flight, --force restarts at once; --proxy: an
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
-                                  before the github.com URL (none unless given; still checked against usemagpie.ai's SHA-256)
+                                  before the github.com URL (none unless given; still checked against the release's own SHA-256)
   magpie update mirror [<prefix>|off]  the mirror every update, the app's own too, is downloaded through
   magpie update channel [stable|every]  which versions updates offer: stable (one a week, an urgent one at
                                   once) or every version as it comes out (the default)
