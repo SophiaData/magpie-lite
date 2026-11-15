@@ -1379,6 +1379,70 @@ each one.
     it. Six times in this file now, so a line here is not reaching the
     sessions that add a regexp. A guard that only the root package runs
     belongs in a check every push runs, or beside each package's tests.
+- **11-14, criteria still missed.**
+  - The sub-second guard left out again: 92e760f3d (per-key model tag)
+    ran its chosen GUI files, queued the full suite and pushed before
+    it finished. keysTag took the core 421 bytes over coreScriptBudget,
+    and main was red about an hour (#6518). The full suite found it
+    afterwards. TestCoreScriptBudget runs in a second over `git show`;
+    it is run before every push that touches the GUI's scripts, not
+    left to a suite that finishes after the push.
+  - Two sessions fixed #6518 at once. One had said on the issue that
+    it was taking it; f1f34d624 landed the same move without reading
+    the issue first, and the other's work was dropped. Read the
+    issue's last comment before starting on a red, as well as git log.
+  - A test that checks a duration to the millisecond:
+    TestLiveVisibleReasoningFixture set start to now minus at_ms, then
+    see read the clock again, so any pause between the two showed up in
+    the result. macOS CI read 6790 for 6789 (e730a14dc). d6cb40475 bounds it
+    by the time that really passed, red with a 3ms stall on the old
+    code. A test that sets a time from the clock and then reads the
+    clock again allows the time in between.
+  - A size budget raised to fit, again: c5b40bf89 raised
+    coreScriptBudget by 67 bytes for one connectLine line, "no page to
+    move it to", hours after f1f34d624 found room by moving keysTag
+    out. The owner hasn't set a growth rate (#2710), so a raise still
+    moves something out first.
+    dc85a7ca5 then added +12 for AIGoCode's logo in pngIcons, and
+    27c998aba +491 for costs in each provider's currency, nothing moved
+    out either: three raises by 13:00, +570 bytes.
+    11ddf076b (15:46) made it four, +326 for the Qwen platform sign-in,
+    though it put the field and its wait in qianwenplan.js first.
+    07a62b373 (16:34) a fifth, +72 for Copy all keys, the row itself in
+    keyrates.js. 80a315a70 (17:00) a sixth, +83 for the hidden page's
+    cache release: +1,051 bytes in a day, each raise "no page to move it
+    to".
+  - Chosen packages again: 11ddf076b (Qwen platform sign-in) ran
+    provider, gui and cli, not ./..., and its package-level regexp left
+    TestNoEagerPackageRegexps (root package) red on main from 15:46 to
+    16:55 (05d25d8dc). The same guard went red the same morning from the
+    yaml.v3 copy. A new file that adds a package-level value runs the
+    guards that walk the tree, which only ./... reaches.
+  - No Test run finished green from 63c91cae5 (11-13 21:51 UTC) to
+    07a62b373 (11-14 08:34 UTC): 57 runs were cancelled by the next push
+    and two went red (TestEffortUpdateRefused, fixed in a4937f8ff;
+    TestStaleLatestIsNotUpToDate, #6575). 81 commits and 51 releases
+    in that time had no CI run of their own, only the mote runs their
+    bodies name. A cancelled run tests nothing; when pushes come faster
+    than a run takes, someone lets one run finish, or the workflow keeps
+    the run of the newest tag instead of cancelling it.
+  - A library vendored for an allocation cut: 0caa09b3d copied
+    yaml.v3 v3.0.1 into third_party (11,400 lines, go.mod replace) for
+    a 7-line emitter change. The review diffed it against the gofmt'd
+    upstream: only those 7 lines differ. Footprint moved 59 -> 58 MB,
+    within run-to-run spread; the gain is ~24 MB of short-lived
+    allocations on a catalog change. The cost stays: an upstream fix
+    reaches magpie only when someone copies it over by hand
+    (MAGPIE.md says how), and the full suite wasn't run. A vendored
+    fork names its measured gain against that cost, and runs the suite.
+    The suite would have caught it: TestNoEagerPackageRegexps walks the
+    whole tree, and was red on main from 0caa09b3d until fc75d90af
+    patched yaml.v3 a second time. ea6470cb7 had left third_party out of
+    i18n-keys instead. Decide once which guards a vendored tree answers
+    to, and put that in its MAGPIE.md.
+  - Done right: f1f34d624 met the budget with no raise, moving keysTag
+    into keyrates.js, which is loaded exactly when a model can have a
+    key tag.
 - **Done right on 10-17.** The retire stack (0f1666b38 to de671719a)
   diffed staticcheck's U1000 against its base for dead code, b98f906b1
   was red on the old code for an own-account gap, and 8 subscriptions
