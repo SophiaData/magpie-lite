@@ -736,6 +736,10 @@ body:not(.mac):not(.web) .modal .editor.framed > .ebody { overflow-y: scroll; pa
 body.web .modal .editor.framed > .ebody { overflow-y: scroll; }
 .list { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; flex: none; }
 body.panel .list { border: 0; border-radius: 10px; box-shadow: var(--card-edge); }
+/* a Settings card with no rows (Allowed addresses, Client certificates and
+   HTTPS while Share on local network is off) is not drawn: its border was a
+   thin line under the card above (fishmagic80 on X) */
+.set-page .list:empty { display: none; }
 .row { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 5px 9px 5px 11px; }
 body.window .row { min-height: 48px; padding: 7px 12px 7px 14px; gap: 12px; }
 .row + .row, .editor + .row, .row + .editor { border-top: 1px solid var(--line-2); }
@@ -1243,6 +1247,16 @@ body.panel .row.pref.flash { border-radius: 10px; }
 .qc-line.qc-short { stroke-width: 1.25; opacity: .7; }
 .qc-even { stroke-width: 1; stroke-dasharray: 3 3; opacity: .45; vector-effect: non-scaling-stroke; }
 .qc-now { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 1 2; vector-effect: non-scaling-stroke; }
+.qc-hot { stroke: var(--muted); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.quota-curve { position: relative; }
+.quota-curve .qc-tip { position: absolute; z-index: 3; min-width: 140px; max-width: 240px; padding: 7px 9px 6px; background: var(--pop-bg); border-radius: 9px; box-shadow: var(--shadow); font-size: 11px; color: var(--fg); pointer-events: none; }
+.quota-curve .qc-tip b { display: block; margin-bottom: 3px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.quota-curve .qc-tip div { display: flex; align-items: center; gap: 6px; line-height: 1.6; }
+.quota-curve .qc-tip div span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quota-curve .qc-tip i { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+.quota-curve .qc-tip em { margin-left: auto; padding-left: 10px; font-style: normal; font-variant-numeric: tabular-nums; }
+.quota-head .qt-days { width: 64px; height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--fg); font-size: 12px; outline: none; }
+.quota-head .qt-days:focus { border-color: var(--accent); }
 .quota-curve .qc-axis { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .quota-curve .qc-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 5px; font-size: 10.5px; color: var(--muted); }
 /* a key never breaks inside: a long name ends in … rather than its % on a line of its own */
@@ -3371,6 +3385,26 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
 /* a menu of actions, where nothing is or can be ticked, keeps no room for
    a tick: its items line up with its heading */
 .proto-menu.pm-bare .pm-tick { display: none; }
+/* Settings' Sidebar pages (navpages.js): each page's row is dragged to its
+   place, the grip at its end showing on the row under the pointer, as an
+   iPhone's list being reordered has it; Providers is always shown */
+.nav-pages-list { position: relative; display: grid; gap: 1px; }
+.nav-pages-menu .pm-item { align-items: center; }
+.nav-pages-menu .pm-words { flex: 1; min-width: 0; }
+.nav-pages-menu .grip { flex: none; display: grid; place-items: center; align-self: stretch; width: 26px; margin: -6px -8px -7px 0; touch-action: none; cursor: grab; opacity: 0; transition: opacity .15s ease; }
+.nav-pages-menu .grip::before { content: ""; width: 6px; height: 11px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3px 3.75px; }
+.nav-pages-menu .pm-item:is(:hover, .dragging) .grip { opacity: 1; }
+/* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
+.nav-pages-menu .pm-item:focus-visible .grip { opacity: 1; }
+@media (hover: none) { .nav-pages-menu .grip { opacity: 1; } }
+/* a finger gets a grip it can find: 40px wide where the pointer is coarse */
+@media (pointer: coarse) { .nav-pages-menu .grip { width: 40px; } }
+.nav-pages-menu .pm-fixed .pm-tick { opacity: .4; }
+.nav-pages-list.sorting { user-select: none; -webkit-user-select: none; }
+.nav-pages-list.sorting > .pm-item { transition: transform .16s cubic-bezier(.23, 1, .32, 1); cursor: grabbing; }
+.nav-pages-list.sorting > .pm-item.dragging { z-index: 2; background: var(--card-2); box-shadow: 0 0 0 1px var(--line); transition: none; will-change: transform; }
+@media (prefers-reduced-motion: reduce) { .nav-pages-list.sorting > .pm-item { transition: none; } }
+.nav-pages-reset { margin-top: 3px; }
 /* a group's heading in a menu of many: it ticks all of its items */
 .proto-menu .pm-group { margin-top: 3px; }
 .proto-menu .pm-group .pm-name { font-size: 11px; font-weight: 600; color: var(--muted); }
@@ -3763,6 +3797,7 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { box-shadow: 0 1px 0 va
 .stepplan .state { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); line-height: 1.4; }
 .stepplan .steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .stepplan .steps .pair { margin-top: 2px; }
+.stepplan .ended { display: block; margin-bottom: 8px; color: var(--fg); }
 .stepplan .bookmarklet { display: inline-block; padding: 1px 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--fg); background: var(--pill); text-decoration: none; cursor: grab; white-space: nowrap; }
 .editor input[type="text"], .editor input[type="password"], .editor input[type="url"], .editor input[type="number"], .acc .kf input, .acc input.rename-in {
   height: 27px; padding: 0 9px; border-radius: 7px;
@@ -4300,6 +4335,10 @@ img.nav-ic { border-radius: 3px; object-fit: contain; }
 #otelList .otel-env { padding: 12px 14px; border-top: 1px solid var(--line-2); font-size: 11.5px; color: var(--muted); }
 
 .session-terminal-select, .pref-pick { max-width: min(230px, 45%); height: 26px; color: var(--fg); }
+/* inside a row's value box, whose width is its content's, 45% of it would
+   shrink the button to a clipped glyph (jiangshangmuyun on X); the box is
+   held to 60% of the row already */
+.val > .pref-pick { max-width: min(230px, 100%); }
 .session-terminal-select:focus-visible, .pref-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .row.pref .segs { flex: none; margin-left: auto; }
 .proxy-segs { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-left: auto; min-width: 0; max-width: 100%; }
@@ -4469,6 +4508,7 @@ input.words.remote-key { width: 160px; }
 .prefs .row.rule-editing .val.rule-add { flex-wrap: wrap; row-gap: 6px; }
 .prefs .row.rule-editing .rule-tail { display: flex; align-items: center; gap: 6px; flex: 1 1 240px; min-width: 0; }
 .row.pref .sub.err { color: var(--red); white-space: normal; }
+.row.pref .sub .pipe-part.err { color: var(--red); }
 /* Download source's way to the docs' Mirrors page, quiet in its line */
 .row.pref .sub .sub-more { padding: 0; color: var(--fg-2); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 2px; cursor: pointer; transition: color .15s ease; }
 .row.pref .sub .sub-more:hover { color: var(--fg); }

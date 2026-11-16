@@ -418,6 +418,29 @@ TestSettingsSaveKeepsWhatItDoesNotSend (internal/gui) every setting.
   the work already runs.
 - Seen 2× (2026-11-11, 2026-11-15).
 
+**A byte-for-byte check of a stream allows what the protocol allows,
+and its failure message counts against what it compared.**
+- TestPassthroughResponsesBigLastEvent compared a 2MB stream byte for
+  byte. On macOS CI at 2d106b5c1 it took 5.83s, past keepHeldEvery, and
+  the agent was kept alive with one `: keepalive` comment, which every SSE
+  client skips. The message said "17 bytes added", counted against the
+  raw reply, not the renamed one it compared, so the 12-byte keepalive
+  looked like a 17-byte `"model":"fake/m1"`. Fixed in fff0755b5,
+  reproduced by setting keepHeldEvery to 1ms (red 3 of 3 on the old test).
+- A stream test leaves out SSE comments at a line's start. A failure names
+  the byte where the bodies part and what each side has there.
+- Seen 1× (2026-11-15).
+
+**A test that bounds a count of work is run at -cpu 1 too.**
+- 9dcec6751 (11-16) bounded the request archive's LISTs at about 45 for
+  200 calls and measured 39 on a many-core box. On one CPU every upload
+  landed during a prune pass and ran another that listed the bucket
+  again for nothing: 44 to 68 LISTs, red on macOS CI at 50f7a8e01. The
+  test was right; the code did the extra work (fixed in 39e4b9934).
+- Run such a test with `-count=10 -cpu 1,4` before calling its bound
+  measured.
+- Seen 1× (2026-11-16).
+
 **A full run gives the slow packages room.** `go test ./...` at the default
 10m timeout times out in internal/gateway (#2108), and under load in
 internal/provider and internal/agent. Use -timeout 45m, so "every package
@@ -425,23 +448,6 @@ ok except gateway" stops being a normal run record.
 - 194b2fd3c, 2fbbd1694, 3e812ebde and 3ec45e715 each recorded a timed-out
   package.
 - Seen 1× (2026-10-14).
-
-**One full suite runs on a machine at a time.**
-- On 10-16 one session ran three suites at once (a 150m agent and
-  gateway run, a full ./... run and an agent-only run) beside others, at
-  load 300 to 400. Every full suite timed out, so no record said the
-  suite passed, and the Cursor mover's one-line min waited ~3h behind
-  them (#2557).
-- Done right from the evening on: a751f5282 and later commits ran
-  "through suite-lock", one suite per machine, and their records say ok.
-- 10-17: at 10:07 the box had three `go test ./...` runs, ~35 GUI
-  runners and over 100 browsers from several sessions, at load 313.
-  d4a1b9baa's GUI run was killed at its 30s bar, ebf3f48f7's shared Go
-  cache had files trimmed mid-run by another run, internal/agent took
-  50 to 58 minutes (#2544), and dccfefdf7's eight AppKit tests were
-  killed (#2645). The rule lives in this file only; a lock every suite
-  goes through would hold it.
-- Seen 2× (2026-10-16, 2026-10-17).
 
 **A quiet `go test ./...` log is not a hang until a package's own time
 says so.** go test prints packages in order, so one slow package holds
@@ -470,13 +476,33 @@ back every line after it, and the log moves in bursts.
   runs every GUI file that wheels the page (`reach`, `wheelTo`).
 - Seen 2× (2026-10-17, 2026-10-28).
 
+**A red only CI's OS shows is probed on CI's runners, with the
+suspect switched on and off, not rerun.** Start from what changed in
+that system's code the day before the red first came.
+- EBADF on plain file reads, writes and closes in internal/sessions was
+  red on macOS CI from 11-13 to 11-16 and filed twice (#6368, #6785).
+  mote and mica run macOS 27 and never showed it. The day before the
+  first red, 6f3e76626 had made the FSEvents stream with
+  kFSEventStreamCreateFlagWatchRoot. One probe run on macos-14, -15 and
+  -latest (#6795), with the flag on, off, on, off, gave 916 EBADF on and
+  0 off. 0522bf84f dropped the flag.
+- A system flag that watches more than it needs is a cost: WatchRoot's
+  one job (word of a root renamed) is an os.SameFile on the next Watch.
+- Seen 1× (2026-11-16).
+
 **Windows CI only compiles the tests, so a Windows-only red shows
 nowhere.** Run the package on the Windows box before calling a Windows
 failure "the same on main".
 - TestCursor was red on Windows for 3 days, from 585f7f7d until #1248.
 - 5d0c1dca's 16 and 76 Windows failures were called the same as main.
   Neither was filed. #923 is the open work to run more of the suite there.
-- Seen 1× (2026-10-08).
+- 11-16: filed is not owned. 023a56373 and c6a67dd41 each ran
+  internal/gui on the Windows box and shipped past 10 or 11 reds,
+  "red the same at origin/main" and open. #5928 had sat six days with
+  no comment; it was a one-line test fix (5bd13b802). Before naming a
+  Windows red as filed, read its issue: if nobody has it and the fix is
+  small, it is yours.
+- Seen 2× (2026-10-08, 2026-11-16).
 
 **What telemetry sends is an allow-list, and a change to what is sent
 re-derives every place that discloses it.**
@@ -530,18 +556,9 @@ push.**
   testdata.
 - Seen 1× (2026-10-10).
 
-**A check that a value is gone looks past text magpie generates.**
-- 6c099edd's redact test checked that "ops" was gone by substring. The
-  placeholder's random suffix spelled it ({{HOSTNAME_mlopsiy3}}) on macOS
-  CI. f0453192 strips placeholders before the check, in its sibling
-  TestMask too.
-- 11-10: TestSearchAPIFailureKeepsNoURL looked for its query's "4410"
-  in usage.jsonl by substring. A random port (127.0.0.1:44105, #5616)
-  and then a route_id (1794294410888, run 42771382484) held it, and
-  main went red. Gaoshou101's patch, posted on #5616 three days before,
-  made the query letters only (17b9b5b03). A word a test looks for
-  can't be spelled by a port, an id, a time or a hash.
-- Seen 2× (2026-10-10, 2026-11-10).
+**A check that a value is gone looks past text magpie generates** is
+in the code standards since 11-16. See
+[Moved to the code standards](#moved-to-the-code-standards).
 
 **A script Settings loads runs in every mode the GUI has: the window,
 the panel and gateway mode.**
@@ -906,6 +923,17 @@ cause:
     push until d5585933f's run finished at ~01:45 with the red. A docs
     page change runs site/worker.test.mjs, because llms-full.txt is
     built from those pages (fixed in 3d8860010).
+    Again 11-15: 256910f17 changed the Antigravity entry in the
+    subscriptions docs, ran Go and GUI tests but not site/, and its own
+    run was cancelled; cli (linux/amd64) went red at 2d106b5c1 (fixed
+    in 25ad34f42). Twice in three days: a change under site/public/docs
+    ends with `node llms-full.mjs` and `node --test site/*.test.mjs`
+    from the repo root, as test.yml runs it.
+    A third time 11-16: 9dcec6751 added the S3 archive cap to the docs
+    and ran neither generator. cli (linux/amd64) went red at 023a56373
+    on llms-full.txt and on public/search/*.json, the index b70c45048
+    added on 11-15 (fixed in f5f27070a). Docs pages now feed two
+    generated files: run `node search-index.mjs` too.
   - 10-28: of main's last 58 Test runs, 49 were cancelled by the next
     push. 0b99b8fbe's new allocation bound went red in macOS's Race job
     (sync.Pool lets go under -race) at 25df3187b, the first run after it
@@ -1110,6 +1138,17 @@ standards since 10-18, widened to a worktree and its logs. See
 
 ## Moved to the code standards
 
+- **One full suite runs on a machine at a time** (10-16, 10-17, 11-16).
+  On 11-16 64c426158 ran the GUI suite on mica beside another session's
+  full suite, was pushed with it still running, and named its 90 reds by
+  page, not by issue.
+- **A check that a value is gone looks past text magpie or the test
+  made up** (10-10, 11-10, 11-15). On 11-15 TestMoreKinds checked that
+  the user name "ops" was gone, and the made-up name for it, eight
+  letters from a key new each run, was zpxopsat: ubuntu CI red at
+  500f39886. #4345 had the same red on mote on 11-12, filed as "passes
+  on rerun" with its output lost. A probe that searched for a key whose
+  made-up name spells "ops" (key 2207: dopsubnz) made it red every run.
 - **A commit's `--stat` names only the files its change touched; any
   other file is a stale tree** (11-11, 11-12, 11-13). On 11-13 8c7328f3a
   (remote quotas) wrote 21 files back to 35aaaa4b9^ and took out three

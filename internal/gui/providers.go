@@ -421,6 +421,9 @@ type providerJSON struct {
 	// read said went wrong or was left as the user's (KoiLx0 on X)
 	LibraryShared bool   `json:"libraryShared,omitempty"`
 	LibraryNote   string `json:"libraryNote,omitempty"`
+	// ConnectAgents: a Remote magpie whose connected agents are
+	// connected here too, those installed here (agent.ConnectsAgents)
+	ConnectAgents bool `json:"connectAgents,omitempty"`
 	// RemoteUpdate: a Remote magpie's word on its last ask to follow
 	// this magpie's version (remoteUpdateNote)
 	RemoteUpdate *remoteUpdateJSON `json:"remoteUpdate,omitempty"`
@@ -575,6 +578,9 @@ type stepPlanJSON struct {
 	SignedIn    bool   `json:"signedIn"`
 	URL         string `json:"url"`
 	Bookmarklet string `json:"bookmarklet"`
+	// Ended: the vendor has ended the kept sign-in, and a new one is asked
+	// for (Baidu Qianfan's alone tells it)
+	Ended bool `json:"ended,omitempty"`
 }
 
 // qianwenPlanJSON: whether magpie has a sign-in to the Qwen AI platform
@@ -833,6 +839,12 @@ type providersJSON struct {
 	// Withdrawn are the plugins this magpie still has that magpie gives
 	// to nobody new, for the page to say the risk and what to use instead
 	Withdrawn []plugin.Withdrawal `json:"withdrawn,omitempty"`
+	// AgyMove are the withdrawn Antigravity plugin's accounts (by email)
+	// that Antigravity (local agy CLI) can take as they are, which it
+	// doesn't have yet (provider.MoveToAgy), and AgyMoved what moving
+	// them did, account by account
+	AgyMove  []string                   `json:"agyMove,omitempty"`
+	AgyMoved []provider.ImportedAccount `json:"agyMoved,omitempty"`
 	// Moved is the agents the change moved off models it stopped serving
 	// (agent.Reseat), for the page to say so.
 	Moved []agent.Move `json:"moved,omitempty"`
@@ -1037,13 +1049,13 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		}
 	}
 	if site := provider.StepFunSite(p); site != "" {
-		out.StepPlan = &stepPlanJSON{site, provider.StepFunSignedIn(p.ID), provider.StepFunSignInURL(site), provider.StepFunBookmarklet()}
+		out.StepPlan = &stepPlanJSON{site, provider.StepFunSignedIn(p.ID), provider.StepFunSignInURL(site), provider.StepFunBookmarklet(), false}
 	}
 	if provider.QianwenPlan(p) {
 		out.QianwenPlan = &qianwenPlanJSON{provider.QianwenSignedIn(p.ID), provider.QianwenAccount(p.ID)}
 	}
 	if provider.QianfanPlan(p) {
-		out.QianfanPlan = &stepPlanJSON{"", provider.QianfanSignedIn(p.ID), provider.QianfanSignInURL, provider.QianfanBookmarklet()}
+		out.QianfanPlan = &stepPlanJSON{"", provider.QianfanSignedIn(p.ID), provider.QianfanSignInURL, provider.QianfanBookmarklet(), provider.QianfanEnded(p.ID)}
 	}
 	out.Key.Set = p.Key != ""
 	out.Key.Masked = provider.Mask(p.Key)
@@ -1478,7 +1490,13 @@ func providersState() providersJSON {
 		}
 		s.MovesTo[id] = provider.MovePackage(id)
 	}
+	s.AgyMove = provider.AgyMoveUsers()
 	for _, c := range provider.MoveCandidates() {
+		// Antigravity's plugin is retired too: its accounts go to agy-cli,
+		// on AgyMove's line
+		if c.ID == "antigravity" && len(s.AgyMove) > 0 {
+			continue
+		}
 		if provider.BuiltinRetired(c.ID) {
 			s.Unmoved = append(s.Unmoved, c)
 		}
@@ -1507,6 +1525,7 @@ func providersState() providersJSON {
 	desktop := desktopNumbers(uses)
 	have := map[string]bool{}
 	var remoteMCP map[string]bool // read once, at the first Remote magpie
+	var connects map[string]bool  // the same
 	all := provider.All()
 	// both lists made once at their size: each grown by append was 6 MB of
 	// what forty polls of the Providers page allocated with real accounts
@@ -1524,6 +1543,10 @@ func providersState() providersJSON {
 			info.LibraryMCP = remoteMCP[p.ID]
 			info.LibraryShared = library.BorrowedOn()[p.ID]
 			info.LibraryNote = library.BorrowNote(p.ID)
+			if connects == nil {
+				connects = agent.ConnectsAgents()
+			}
+			info.ConnectAgents = connects[p.ID]
 			info.RemoteUpdate = remoteUpdateNote(p.ID, time.Now())
 		}
 		s.Providers = append(s.Providers, info)
@@ -1619,6 +1642,7 @@ var errRetired = errors.New("magpie's built-in subscriptions are retired: their 
 var (
 	moveProvider  = provider.Move
 	adoptProvider = provider.Adopt
+	moveToAgy     = provider.MoveToAgy
 )
 
 // moveContext keeps a move going though the page that asked for it goes
@@ -1963,6 +1987,10 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// LibraryShared, on a Remote magpie, is the switch for its
 			// Library's skills and prompts (library.SetBorrow)
 			LibraryShared *bool `json:"libraryShared"`
+			// ConnectAgents, on a Remote magpie, is the switch that
+			// connects here the agents it has connected
+			// (agent.SetConnectAgents)
+			ConnectAgents *bool `json:"connectAgents"`
 			// CopyOf, with New, is the provider the new one is a copy of
 			// (#268): its key and what else the form doesn't carry are
 			// taken from it when left out
@@ -2128,6 +2156,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			in.AuthHeader = *req.AuthHeader
 		}
 		var moved []agent.Move
+		var agyMoved []provider.ImportedAccount
 		switch r.PathValue("action") {
 		case "show":
 			// a signed-in account the user removed, back with its picks
@@ -2161,6 +2190,17 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			ctx, cancel := moveContext(r)
 			defer cancel()
 			if err := adoptProvider(ctx, in.ID); err != nil {
+				failMove(rw, err)
+				return
+			}
+		case "toagy":
+			// the retired Antigravity plugin's accounts onto Antigravity
+			// (local agy CLI), which signs in with the same Google client
+			// (@tongzhenbao on X)
+			ctx, cancel := moveContext(r)
+			defer cancel()
+			var err error
+			if agyMoved, err = moveToAgy(ctx); err != nil {
 				failMove(rw, err)
 				return
 			}
@@ -2688,6 +2728,14 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 						return
 					}
 					askHub = *req.LibraryMCP
+				}
+			}
+			if req.ConnectAgents != nil {
+				if p, err := provider.Find(in.ID); err == nil && p.IsRemoteMagpie() && agent.ConnectsAgents()[in.ID] != *req.ConnectAgents {
+					agent.SetConnectAgents(in.ID, *req.ConnectAgents)
+					if *req.ConnectAgents {
+						go agent.FollowRemotePicks(context.Background())
+					}
 				}
 			}
 			if req.LibraryShared != nil {
@@ -3245,6 +3293,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 		}
 		st := providersState()
 		st.Moved = moved
+		st.AgyMoved = agyMoved
 		writeJSON(rw, st)
 		// the tray panel's account switch draws the kept list: a change
 		// made here is in it at once

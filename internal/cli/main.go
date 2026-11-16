@@ -189,7 +189,7 @@ const usage = `magpie — one place to pick every agent's model
                                   wrote down (a service started with MAGPIE_ADDR needs none of them); a restart waits at most 10
                                   minutes for requests in flight, --force restarts at once; --proxy: an
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
-                                  before the github.com URL (none unless given; still checked against the release's own SHA-256)
+                                  before the github.com URL (none unless given; still checked against usemagpie.ai's SHA-256)
   magpie update mirror [<prefix>|off]  the mirror every update, the app's own too, is downloaded through
   magpie update channel [stable|daily|every]  which versions updates offer: stable (one a week), daily (one
                                   a day that passed its tests), an urgent one at once on both, or every
@@ -420,6 +420,9 @@ func run(args []string) error {
 			if len(args) > 1 && args[1] == "memory" {
 				return browsermcp.RunMemory(args[2:])
 			}
+			if len(args) > 1 && args[1] == "sessions" {
+				return browsermcp.RunSessions(args[2:])
+			}
 			return imagemcp.Run(args[1:])
 		case "claude-mcp-helper": // internal: stdio MCP subprocess spawned by Claude Code
 			return claudebridge.RunMCP(args[1:])
@@ -525,6 +528,9 @@ func run(args []string) error {
 		}
 		return nil, false
 	}
+	// and kept there under its size, a bucket grown before that brought
+	// under it once the gateway starts
+	gateway.WhileServing = append(gateway.WhileServing, gateway.KeepBucketArchiveBounded)
 	if len(args) == 0 {
 		if hasGUI {
 			return runGUI(true, "")
