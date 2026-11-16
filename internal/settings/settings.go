@@ -591,14 +591,16 @@ type Settings struct {
 	// through, its prefix put before the release's github.com URL
 	// (https://mirror.example/https://github.com/…): "" for none, which is
 	// the default — magpie names no mirror of its own. The file is still
-	// checked against the SHA-256 the release's own feed gives,
+	// checked against the SHA-256 the update feed at usemagpie.ai gives,
 	// never one from the mirror. magpie update mirror sets it.
 	UpdateMirror string `json:"updateMirror,omitempty"`
 	// UpdateChannel is which versions an update is offered: "" every
 	// version as it comes out, the default; UpdateStable ("stable") one a
 	// week, the newest that had been out three days as the week began, or
 	// an urgent one (a security hole, a ban risk, lost data) at once, from
-	// the update feed's ?channel=stable (ssharpcc on X). Settings' Update
+	// the update feed's ?channel=stable (ssharpcc on X); UpdateDaily
+	// ("daily") one a day, the newest that passed its tests, or an urgent
+	// one at once, from ?channel=daily (fishmagic80 on X). Settings' Update
 	// channel and magpie update channel set it.
 	UpdateChannel string `json:"updateChannel,omitempty"`
 	// Vision is the model that describes an image to a model that can't see
@@ -826,6 +828,12 @@ type Settings struct {
 	// "codex/gpt-5.6-sol"), for clients moved from another proxy that ask
 	// for bare ids (love1sbug on X; provider.BareEntries). Off by default.
 	BareModelIDs bool `json:"bareModelIDs,omitempty"`
+	// BareModelIDsOnly, with BareModelIDs, has the list give a model its
+	// bare id in place of the provider/model ids it stands for, not beside
+	// them (qQianye on X: a client of a Docker magpie listed every model
+	// twice, and a gateway has no Agents page to pick models on). A
+	// provider/model id the bare one doesn't reach stays (provider.BareOnly).
+	BareModelIDsOnly bool `json:"bareModelIDsOnly,omitempty"`
 	// CodexAgentsV1 has the OpenAI models magpie hands Codex — the ChatGPT
 	// account's own, their codex/ ids, the groups one is in, and those a
 	// provider that seals as that backend does serves (catalog.Model.Seals:
@@ -1054,9 +1062,11 @@ type Settings struct {
 	// leaves out (whqtian_07012 on Discord), each as its tray card id (the
 	// provider id, then "|" and the account when there is one) and "|plan"
 	// or "|balance", so StepFun's balance card goes while its plan card
-	// stays. Only what is shown: the tray panel's Allowances tab and the
-	// TUI's Usage page leave them out too (onkashiko on X), while routing,
-	// caps, counting and the menu bar's cells keep them.
+	// stays. Only what is shown: the tray panel's Allowances tab, the menu
+	// bar's cells, tooltip and Windows' tray figure, and the TUI's Usage
+	// page leave them out too (onkashiko on X; provider.ShownQuotas), while
+	// routing, caps and counting keep them. TrayUsages keeps a hidden
+	// card's cell, which shows again with the card.
 	UsageCardsHidden []string `json:"usageCardsHidden,omitempty"`
 	// UsageWindowsHidden are the quota rows of an allowance card that the
 	// Overview leaves out (wangshaowei39 on X: Antigravity's Claude & GPT
@@ -1064,7 +1074,7 @@ type Settings struct {
 	// pool's or a model family's name, else the window's name. Every
 	// account of the provider alike. A card is never left with none: when
 	// every row is named, all show. Only what is shown, there, in the tray
-	// panel and in the TUI's Usage page.
+	// panel, the menu bar and the TUI's Usage page.
 	UsageWindowsHidden []string `json:"usageWindowsHidden,omitempty"`
 	// ClientAgents counts a client magpie doesn't know as one of the agents
 	// it does, on the Usage and Sessions pages (#1958, NorethSea): a bridge
@@ -1265,6 +1275,11 @@ type Settings struct {
 	// minimised; not at all under Wayland, where a window can't place
 	// itself. gui's openAt moves it onto a screen there now.
 	WindowAt []int `json:"windowAt,omitempty"`
+	// OnTop keeps the main window above other apps' windows, pinned from
+	// its title bar's pin (NovaStudiosss on X: Usage and Routing watched
+	// while working elsewhere). This computer's own, as the window's size
+	// and place are.
+	OnTop bool `json:"onTop,omitempty"`
 }
 
 // ModelPrice is the price of one model as the user states it. Each part is a
@@ -1365,6 +1380,10 @@ const AnyProvider = "*/"
 // UpdateStable is UpdateChannel's Stable: a version a week, an urgent one
 // at once.
 const UpdateStable = "stable"
+
+// UpdateDaily is UpdateChannel's Daily: a version a day, the newest that
+// passed its tests and has all its files, an urgent one at once.
+const UpdateDaily = "daily"
 
 // The values of Settings.UpdateSource; "" is automatic.
 const (
@@ -1567,13 +1586,16 @@ var (
 	Warmups = []string{"", "week", "all"}
 	// TrayEvery are TrayUsageEvery's values, in minutes.
 	TrayEvery = []int{1, 3, 5, 10, 30}
-	// UpdateChannels are UpdateChannel's values: every version, Stable.
-	UpdateChannels = []string{"", UpdateStable}
+	// UpdateChannels are UpdateChannel's values: every version, Daily,
+	// Stable.
+	UpdateChannels = []string{"", UpdateDaily, UpdateStable}
 	// UpdateEveries are UpdateEvery's values, in minutes.
 	UpdateEveries = []int{30, 60, 360, 1440}
 	// TextSizes are TextSize's values, in percent. None is under 100: the
 	// webviews' zoom on Windows and Linux (Wails' SetZoom) goes no lower.
-	TextSizes = []int{100, 110, 125, 150}
+	// 115 and 120 are the steps between 110 and 125 (WeltAn_X on X: 110
+	// small, 125 crowded at 4K and 200%).
+	TextSizes = []int{100, 110, 115, 120, 125, 150}
 )
 
 // SearchFirst's values: a provider's search first, saved as "", or the
@@ -1769,7 +1791,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.UpdateProxy, s.UpdateProxyCustom = cur.UpdateProxy, cur.UpdateProxyCustom
 	s.UpdateSource = cur.UpdateSource
 	s.WindowMaximised, s.KeepAwake, s.KeepAwakeDisplay = cur.WindowMaximised, cur.KeepAwake, cur.KeepAwakeDisplay
-	s.WindowAt = cur.WindowAt
+	s.WindowAt, s.OnTop = cur.WindowAt, cur.OnTop
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird, s.TrayPace, s.TrayNoCost = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird, cur.TrayPace, cur.TrayNoCost
 	s.TrayWindows, s.TrayNoNumber, s.TrayCurrency = cur.TrayWindows, cur.TrayNoNumber, cur.TrayCurrency
 	s.GatewayMode = cur.GatewayMode
@@ -2325,6 +2347,18 @@ func SetQuitNoAsk(on bool) error {
 	return save(s, false)
 }
 
+// SetOnTop sets OnTop alone, from what the file holds now; a file that
+// can't be read is left as it is.
+func SetOnTop(on bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.OnTop = on
+	return save(s, false)
+}
+
 // RouterNoteMost is how many characters RouterNote keeps: a few words,
 // said before every tool's description.
 const RouterNoteMost = 80
@@ -2593,7 +2627,7 @@ func saveOwn(s Settings, recording, reads bool) error {
 		return fmt.Errorf("magpie checks for updates every %v minutes, not %d", UpdateEveries, s.UpdateEvery)
 	}
 	if !slices.Contains(UpdateChannels, s.UpdateChannel) {
-		return fmt.Errorf("the update channel is %q (stable) or empty (every version), not %q", UpdateStable, s.UpdateChannel)
+		return fmt.Errorf("the update channel is %q, %q or empty (every version), not %q", UpdateStable, UpdateDaily, s.UpdateChannel)
 	}
 	if m := s.UpdateMirror; m != "" {
 		if u, err := url.Parse(m); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {

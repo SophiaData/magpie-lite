@@ -199,6 +199,10 @@ type agentJSON struct {
 	Icon   string      `json:"icon"`
 	Path   string      `json:"path"`
 	Fields []fieldJSON `json:"fields"`
+	// Own: the user's own settings of the agent's (agent.Field.Own,
+	// Claude Code's permission mode), apart from Fields so no picker on
+	// its row draws them: agentcompact.js folds them under Advanced
+	Own []fieldJSON `json:"own,omitempty"`
 	// Drift: its config no longer does what magpie set, and how to set it again
 	Drift *agent.Drift `json:"drift,omitempty"`
 	// Wired: magpie is in its config, which its menu's Disconnect takes out
@@ -1245,6 +1249,12 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if s.NoBird {
 			boot["noBird"] = true
 		}
+		// and the title bar's pin, where the window can be kept on top
+		// (ontop.go): shown, and pressed, from the first paint
+		if pinnable(w) {
+			boot["pin"] = true
+			boot["onTop"] = s.OnTop
+		}
 		// a browser tab keeps its own font choice (fonts.js)
 		if !isWeb(w) {
 			boot["uiFont"], boot["codeFont"] = s.UIFont, s.CodeFont
@@ -1886,6 +1896,8 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		s.UpdateSkip = strings.TrimSpace(in.Version)
 		if s.UpdateSkip != "" {
 			updates.quietAgain() // a dismissal holds for the quiet, not only the next release
+		} else {
+			updates.unhush() // Show again
 		}
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
@@ -1917,14 +1929,15 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		writeJSON(rw, settingsState())
 	})
 	// whether the gateway's /v1/models lists each model by its id without
-	// the provider as well (settings.BareModelIDs, love1sbug on X)
+	// the provider as well (settings.BareModelIDs, love1sbug on X), or
+	// with only, by that id alone (BareModelIDsOnly, qQianye on X)
 	mux.HandleFunc("POST /api/settings/bare-ids", func(rw http.ResponseWriter, r *http.Request) {
-		var in struct{ On bool }
+		var in struct{ On, Only bool }
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
-		if err := provider.SetBareModelIDs(in.On); err != nil {
+		if err := provider.SetBareIDs(in.On, in.Only); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -2336,6 +2349,21 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, map[string]bool{"ok": true})
 	})
+	// Warm up all: each of a Codex or Claude agent's accounts in use and not
+	// in a window already warmed at once, and what each came to
+	mux.HandleFunc("POST /api/warm-all", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Agent string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		rs, err := provider.WarmAll(r.Context(), in.Agent)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]any{"results": rs})
+	})
 	// whether a Codex account spends one of its resets by itself once its
 	// week is used up, the Usage card's toggle, set on its own
 	// a Codex account's own daily warm-up time: "06:00", "off", or "" to
@@ -2730,6 +2758,11 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		if err := settings.Save(s); err != nil {
 			fail(rw, err)
 			return
+		}
+		// the menu bar leaves out what the Overview hides (trayShown): it
+		// follows a card hidden or shown again at once
+		if (in.CardsHidden != nil || in.WindowsHidden != nil) && onTrayUsage != nil {
+			onTrayUsage()
 		}
 		writeJSON(rw, settingsState())
 	})
@@ -3179,12 +3212,30 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	mux.HandleFunc("GET /api/quit", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, map[string]any{"agents": quitAgents()})
 	})
+	// the question's Disconnect and quit: the agents put back as Put
+	// agents back when quitting puts them, for this quit (quitDisconnect)
+	mux.HandleFunc("POST /api/quit/disconnect", func(rw http.ResponseWriter, r *http.Request) {
+		if err := quitDisconnect(); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, state())
+	})
 	mux.HandleFunc("POST /api/window/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		switch r.PathValue("action") {
 		case "hide":
 			w.HidePanel()
 		case "main":
 			w.ShowMain(mainView(r.URL.Query()))
+		case "ontop":
+			// the title bar's pin (ontop.go)
+			on := r.URL.Query().Get("on") == "1"
+			if err := pinMain(w, on); err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, map[string]bool{"onTop": on})
+			return
 		case "quit":
 			// the question's "Don't ask again" (noAsk=1, zhujiu on
 			// Discord) is saved before the quit; a save that fails keeps
@@ -3308,7 +3359,7 @@ func state() stateJSON {
 		}
 		vals := a.Values()
 		now[a.ID] = vals
-		aj := agentJSON{ID: a.ID, Name: a.Name, Icon: a.Icon, Path: tilde(a.Path), Fields: agentFields(a, vals)}
+		aj := agentJSON{ID: a.ID, Name: a.Name, Icon: a.Icon, Path: tilde(a.Path), Fields: agentFields(a, vals), Own: ownFields(a, vals)}
 		aj.Models = agentModelCount(a, aj.Fields)
 		aj.Menu = a.ListsModels
 		aj.NoNames = a.NoNames

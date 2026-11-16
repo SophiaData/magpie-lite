@@ -30,32 +30,31 @@ import (
 // GitHub can't give: on Stable a failed feed stays a failed feed.
 
 // releaseRepo is where releases are published.
-const releaseRepo = Repo
+const releaseRepo = "yetone/magpie-releases"
 
 // feedWait is how long the feed has to answer when GitHub stands behind
 // it: a network that drops usemagpie.ai's packets would otherwise hold
 // the check for the client's ten minutes. A var for tests.
 var feedWait = 20 * time.Second
 
-// siteFeed is the default feed: this build's newest release carries it.
-// A var for tests.
-var siteFeed = feedAsset + "feed.json"
+// siteFeed is the default feed; a var for tests.
+var siteFeed = Site + "/api/latest"
 
 // maxSmall bounds SHA256SUMS and its signature.
 const maxSmall = 1 << 20
 
 // fallsBack says whether a failed feed goes on to GitHub: the default
-// feed, not the Stable channel, and not an ask already cancelled.
+// feed, not the Stable or Daily channel, and not an ask already cancelled.
 func fallsBack(ctx context.Context) bool {
-	return ctx.Err() == nil && Feed() == siteFeed && !Stable() && Source() == ""
+	return ctx.Err() == nil && Feed() == siteFeed && !Picked() && Source() == ""
 }
 
 // githubOnly says whether the release is read from GitHub alone, with no
 // try at the feed: Settings' GitHub only, on the default feed and not on
-// Stable (whose release only the site knows; its files still come from
-// GitHub).
+// Stable or Daily (whose release only the site knows; its files still come
+// from GitHub).
 func githubOnly() bool {
-	return Feed() == siteFeed && !Stable() && Source() == settings.UpdateSourceGitHub
+	return Feed() == siteFeed && !Picked() && Source() == settings.UpdateSourceGitHub
 }
 
 // githubLatest is the newest release as GitHub gives it, verified.

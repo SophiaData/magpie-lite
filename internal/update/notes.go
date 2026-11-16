@@ -25,18 +25,19 @@ type Note struct {
 	Pending bool `json:"pending,omitempty"`
 }
 
-// NotesFeed is where the notes of past releases are listed: this build's
-// own releases. MAGPIE_NOTES_FEED points it elsewhere.
+// NotesFeed is where the notes of past releases are listed: beside the
+// update feed, on magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
 func NotesFeed() string {
 	if f := os.Getenv("MAGPIE_NOTES_FEED"); f != "" {
 		return f
 	}
-	return feedAsset + "notes.json"
+	return Site + "/api/notes"
 }
 
-// ReleasePage is version's page on GitHub, where its notes are.
+// ReleasePage is version's page on GitHub, where its notes are when the
+// site can't give them (#661).
 func ReleasePage(version string) string {
-	return "https://github.com/" + Repo + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	return "https://github.com/yetone/magpie-releases/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 // NotesBetween asks the site for the notes of every release after after
@@ -148,32 +149,50 @@ func withLang(feed, lang string) string {
 // often, and a long-unopened one would have pages of them.
 const MaxNotes = 40
 
-// StableMaxNotes is MaxNotes on the Stable channel, where an update is a
-// week of releases and its notes are read as one list (ssharpcc on X):
-// every one of them, as far as the site keeps them.
+// StableMaxNotes is MaxNotes on the Stable and Daily channels, where an
+// update is a week or a day of releases and its notes are read as one list
+// (ssharpcc on X): every one of them, as far as the site keeps them.
 const StableMaxNotes = 1500
 
 // MostNotes is how many releases' notes are shown at most on the channel
 // Settings name.
 func MostNotes() int {
-	if Stable() {
+	if Picked() {
 		return StableMaxNotes
 	}
 	return MaxNotes
 }
 
-// Stable is whether Settings' Update channel is Stable: the update feed is
-// asked for a version a week, the newest that had been out three days as
-// the week began (Monday 00:00 UTC), or an urgent one (a security hole, a
-// ban risk, lost data) as soon as it is out. This build's feed is a static
-// file of the newest release (see Feed), which ignores the channel: Stable
-// lists what every channel lists, the newest release.
-func Stable() bool { return settings.Shared().UpdateChannel == settings.UpdateStable }
+// Channel is Settings' Update channel: settings.UpdateStable, the update
+// feed asked for a version a week, the newest that had been out three days
+// as the week began (Monday 00:00 UTC); settings.UpdateDaily, a version a
+// day, the newest out by 20:00 UTC that passed its tests (the Test run on
+// its commit) and has every file; either one with an urgent release (a
+// security hole, a ban risk, lost data) as soon as it is out. "" is every
+// version, and so is a value magpie doesn't know. usemagpie.ai chooses
+// both from the release list (site/worker.js, "The Stable channel" and
+// "The Daily channel"); a release is urgent when a line of its notes
+// starts with "**Urgent release:**".
+func Channel() string {
+	switch c := settings.Shared().UpdateChannel; c {
+	case settings.UpdateStable, settings.UpdateDaily:
+		return c
+	}
+	return ""
+}
 
-// withChannel is feed asking for Stable's release on the Stable channel,
+// Picked is whether the update feed picks the version (Stable or Daily)
+// rather than offering every one: only the site knows a picked release.
+func Picked() bool { return Channel() != "" }
+
+// Stable is whether Settings' Update channel is Stable.
+func Stable() bool { return Channel() == settings.UpdateStable }
+
+// withChannel is feed asking for the channel's release on Stable or Daily,
 // and feed as it is on every version.
 func withChannel(feed string) string {
-	if !Stable() {
+	ch := Channel()
+	if ch == "" {
 		return feed
 	}
 	u, err := url.Parse(feed)
@@ -181,7 +200,7 @@ func withChannel(feed string) string {
 		return feed
 	}
 	q := u.Query()
-	q.Set("channel", settings.UpdateStable)
+	q.Set("channel", ch)
 	u.RawQuery = q.Encode()
 	return u.String()
 }

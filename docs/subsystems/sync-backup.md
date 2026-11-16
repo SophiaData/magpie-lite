@@ -40,8 +40,8 @@ The settings part carries the user's preferences, but not what is only about
 one computer. [`Settings.KeepOwn`](../../internal/settings/settings.go) puts
 those back from this computer's settings whenever a sync, a join, a Restore,
 an Undo or a backup file brings settings in, and `hashes` blanks them, so
-changing one is no change to push. They are: the window's size and whether it
-was maximised, the fonts, the proxy, the gateway's port, sharing on the local
+changing one is no change to push. They are: the window's size, whether it
+was maximised and whether it is kept on top (`OnTop`), the fonts, the proxy, the gateway's port, sharing on the local
 network (`LAN`) and the addresses let in to it (`AllowIPs`), the private
 hosts magpie may download from (`FetchPrivate`), the Dock, gateway
 mode, keeping awake, lightweight windows, WSL lookups, account discovery, when
@@ -536,6 +536,35 @@ running bilis are asked to reload after one is written
 `TestBiliFileDSNNotInKeylessBackup`, `TestBiliFileInLibraryPart`). A sync's preview names it as
 the file `billion-context.json`, added, changed or removed
 (`TestBiliFileInPreview`).
+
+Claude Code's own plugins, the ones installed through its `/plugin`
+marketplaces (`library.Bundle.ClaudePlugins`,
+[`claude_plugins.go`](../../internal/library/claude_plugins.go)), go in the
+library part too. What goes is each marketplace's source (from
+`plugins/known_marketplaces.json` and settings.json's
+`extraKnownMarketplaces`, with only `source` and `autoUpdate` kept) and the
+plugin ids settings.json's `enabledPlugins` has on, under
+`CLAUDE_CONFIG_DIR` when it is set. `installLocation`, `installPath` and the
+downloaded code in `plugins/marketplaces` and `plugins/cache` stay: they are
+this computer's, and Claude Code fetches them again from the sources. A
+marketplace from a local folder or file, or one whose source has a user or
+token in a URL or request headers, is not carried, and neither are its
+plugins. Claude Code adds `claude-plugins-official` itself, so only its
+plugins go. On the other computer they are added to settings.json's
+`extraKnownMarketplaces` and `enabledPlugins`, the setup Claude Code
+installs from at its next interactive start (tried with 2.1.319 in a
+sandbox; `claude -p` does not install). Claude Code's own
+`known_marketplaces.json` and `installed_plugins.json` are never written.
+The file is patched in place (comments and other keys kept) and renamed in
+from a temporary file, and the one it replaces is kept with the backups.
+It only adds: a marketplace known here under that name, and a plugin with
+any value here (turned off too), stay as they are, so a plugin removed on
+one computer is not removed on the others. A settings.json either side
+can't read is neither carried as none nor written over. A computer with no
+such plugins carries none and hashes as before (`TestClaudePluginsCollected`,
+`TestClaudePluginsNoneOrUnknown`, `TestClaudePluginsPut`,
+`TestClaudePluginsInLibraryPart`). The preview names each marketplace and
+plugin (`TestClaudePluginsInPreview`).
 
 ## Verification
 
