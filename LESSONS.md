@@ -672,6 +672,26 @@ Two habits from them:
   (a36319d60), and TestCursorEditorCopiedOncePerChange's 100ms linger
   (2efb71ea0).
 
+**What a started process's reader goes by is set before the process
+starts, not after the call that started it returns.**
+- #6887 (11-16): claudetui's shim began holding a reply only once send
+  woke up after the transcript reader counted the row, and the reader
+  wrote the row out first. TestShimCutMessageIsUnpastable, added by
+  efb62fe90 (community), went red on CI three runs in a row before
+  anyone took it. A 50ms sleep before the check turned it red 3 of 3
+  with CI's output; 4c6c3a453 begins the hold on the reader's side.
+- 11-17: the Claude bridge set a run's tools after `start` returned,
+  while Claude Code was already running and its output was being read.
+  On a loaded ubuntu runner the first tool_use was read with no tools
+  set, and a deferred MCP tool was handed over cut
+  (TestClaudeBridgeHandsOverAnUnloadedMagpieTool, run 43919594403).
+  A 50ms sleep before the assignment reproduced it 3 of 3; 43d9aae09
+  sets them before launch.
+- For each field a goroutine reads, ask which goroutine writes it and
+  whether the reader can run first. "Green 30 of 30 locally" is no
+  answer; inject the delay.
+- Seen 1× (2026-11-17).
+
 **A helper that gives a test a new HOME also stops what an earlier test
 started under the old one.**
 - #6761 (11-15): TestRemoveListedAccountLeavesHiddenNamesake was red in
@@ -1025,6 +1045,20 @@ failure behind it.**
 - Check each package with `npm view --prefer-online`, not the run's
   colour, until the known red is fixed.
 - Seen 1× (2026-10-17).
+
+**A GUI suite with hundreds of known reds is not a baseline.** "The same
+files fail at base" passes any change while main carries that many.
+- 8608ce024 (11-16) recorded 1041 GUI fails at its head and 971 at
+  origin/main, and shipped on "same files". Run alone on mica at
+  8608ce024 (load 9), four of those files were 8 of 60 red
+  (key-replace, plugin-card-update, usage-fold), each already filed:
+  #4126, #3079, #4790, #6003. On 11-16, 465 issues titled "gui tests"
+  were open, none assigned, and 2 had been closed since 11-13.
+- Filing a red is not owning it. A change that names GUI reds takes one
+  of the open ones, or fixes the file it touched. Measure a change by
+  the reds it adds, test by test. A matching file count at base is not
+  that measure.
+- Seen 1× (2026-11-16).
 
 **Keep the issue open until the reporter's case works. Reopen when they say
 it doesn't.**

@@ -1,6 +1,6 @@
-// Package update keeps magpie current. This build's releases are published
-// in its own GitHub repository (Repo), and feed.json in the newest one
-// describes it: its version, notes, and every file with its SHA-256.
+// Package update keeps magpie current. Builds are published as GitHub
+// releases of yetone/magpie-releases; usemagpie.ai/api/latest describes the
+// newest one: its version, notes, and every file with its SHA-256.
 //
 // The macOS app replaces its own bundle: the new zip is downloaded, checked
 // against its hash, unpacked, and accepted only if it is signed by the same
@@ -38,29 +38,14 @@ import (
 	"github.com/yetone/magpie/internal/rosetta"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/source"
+	"github.com/yetone/magpie/internal/winarm"
 )
 
-// Site is this build's home: the GitHub repository its releases are
-// published in.
-const Site = "https://github.com/SophiaData/magpie-lite"
+// Site is magpie's home; its /api/latest is the update feed.
+const Site = "https://usemagpie.ai"
 
-// Repo is the GitHub repository (owner/name) this build's releases and
-// notes come from.
-const Repo = "SophiaData/magpie-lite"
-
-// AutoUpdateDisabled is this build's own choice: it never asks for a newer
-// version by itself, on any setting. A check the user asks for (Settings'
-// Check, `magpie update`) still works.
-const AutoUpdateDisabled = true
-
-// feedAsset is a file this build's newest release carries: release.yml
-// builds the update feed and the notes feed beside the binaries, so
-// releases/latest/download always serves the newest one.
-const feedAsset = "https://github.com/" + Repo + "/releases/latest/download/"
-
-// Feed is where the newest release is described, in this build's own
-// releases. MAGPIE_UPDATE_FEED points it elsewhere, for testing an update
-// against a local server.
+// Feed is where the newest release is described. MAGPIE_UPDATE_FEED points
+// it elsewhere, for testing an update against a local server.
 func Feed() string {
 	if f := os.Getenv("MAGPIE_UPDATE_FEED"); f != "" {
 		return f
@@ -320,11 +305,13 @@ func parse(v string) *semver {
 // one.
 var GUI bool
 
-// goos and goarch are the system this magpie was built for, and
-// translated says it runs under Rosetta; tests set them.
+// goos and goarch are the system this magpie was built for, translated
+// says it runs under Rosetta, and emulated under Windows on Arm's x64
+// emulation; tests set them.
 var (
 	goos, goarch = runtime.GOOS, runtime.GOARCH
 	translated   = rosetta.Translated
+	emulated     = winarm.Emulated
 )
 
 // arch is the architecture an update installs: this build's, but Apple
@@ -334,8 +321,14 @@ var (
 // fetched the Intel build again. Installing Apple silicon's is the same
 // swap: the zip's magpie.app is renamed over the bundle, signed by the
 // same team (sameSigner), and the bare binary is renamed over itself.
+//
+// The same on Windows: an x64 magpie on an Arm64 computer, emulated,
+// updates to the arm64 exe (@EV_John_Liu on X, "magpie是转译的"). The swap
+// is the x64 one: canStart starts the download, which runs natively there,
+// the running exe is moved aside and the arm64 one renamed in under its
+// name, and magpie.com is written again from the new app's own launcher.
 func arch() string {
-	if goos == "darwin" && goarch == "amd64" && translated() {
+	if goarch == "amd64" && (goos == "darwin" && translated() || goos == "windows" && emulated()) {
 		return "arm64"
 	}
 	return goarch

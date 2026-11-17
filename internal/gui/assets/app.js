@@ -6270,6 +6270,7 @@ function renderProviders(quiet) {
   if (importingApps) dialog = renderImportApps(importingApps);
   keptIcons = null;
   markUpstream();
+  globalThis.markBalances?.(); // plugins/usage/page.js
   view.scrollTop = top; // first: a closing dialog folds into its row where it is
   if (dialog) openModal(dialog, quiet); else closeModal();
 }
@@ -11390,17 +11391,22 @@ function emptyModelsHint(p) {
   if (providers?.fetching && !p.fetched && !p.listError) return "Asking your resource for its deployments with this key…";
   return "No deployments came back for this key. Fetch models again, or type a deployment's name as a model id.";
 }
+// queuedSaid: a model test's result its vendor queued, which is no answer:
+// routing gives way to the next member at once, and the last one's wait
+// can end in the queue's 503 (@sufeng1894 on X)
+const queuedSaid = (x) => t("Queued at its vendor, not answered: {queue}", { queue: x.queued });
 function renderModels(p) {
   // a chip's dot: how its model answered, when it has been asked
   const tested = (c, id) => {
     const got = modelTests[p.id];
     if (!got || !(id in got)) return;
     const x = got[id];
-    c.append(el("span", "tdot " + (!x ? "wait" : x.ok ? "ok" : "bad")));
+    // queued: neither green nor a failure (queuedSaid)
+    c.append(el("span", "tdot " + (!x ? "wait" : x.queued ? "queued" : x.ok ? "ok" : "bad")));
     // the API it was asked on said, where the answer says (01huadalang:
     // 右键选择测试只能测试出是不是通的，不能说什么协议是通的)
     const via = x?.protocol ? apiLabel(x.protocol) : "";
-    c.title = !x ? t("Testing…") : x.ok && x.queued ? x.queued : x.ok ? (via ? t("Answered via {api} in {took}", { api: via, took: ledTook(x.ms) }) : t("Answered in {took}", { took: ledTook(x.ms) })) : (via ? via + " · " : "") + (x.status ? x.status + " · " : "") + x.error;
+    c.title = !x ? t("Testing…") : x.queued ? queuedSaid(x) : x.ok ? (via ? t("Answered via {api} in {took}", { api: via, took: ledTook(x.ms) }) : t("Answered in {took}", { took: ledTook(x.ms) })) : (via ? via + " · " : "") + (x.status ? x.status + " · " : "") + x.error;
   };
   // a chip's right-click tests that model alone (yonghe); off, saying why, where it can't be (ARNO)
   const noTest = modelTestWhy(p);
@@ -12166,7 +12172,11 @@ function renderModels(p) {
       const r = await provTest(p.id, { ...asTyped(), test: ids });
       r.results.forEach((x, i) => { got[ids[i]] = x; });
       const i = r.results.findIndex((x) => !x.ok), x = r.results[i], bad = r.results.filter((x) => !x.ok).length;
-      status(x ? t("{n} of {all} models didn't answer; {model}: {error}", { n: bad, all: ids.length, model: ids[i], error: (x.status ? x.status + " · " : "") + x.error }) : t("All {n} models answered", { n: ids.length }), x ? "err" : "ok");
+      // a queued model didn't answer, though it isn't a failure either
+      const k = r.results.findIndex((x) => x.queued);
+      status(x ? t("{n} of {all} models didn't answer; {model}: {error}", { n: bad, all: ids.length, model: ids[i], error: (x.status ? x.status + " · " : "") + x.error })
+        : k >= 0 ? ids[k] + ": " + queuedSaid(r.results[k])
+        : t("All {n} models answered", { n: ids.length }), x ? "err" : k >= 0 ? "" : "ok");
     } catch (e) { delete modelTests[p.id]; testErr(e); }
     draw();
   });
@@ -12180,8 +12190,8 @@ function renderModels(p) {
       const r = await provTest(p.id, { ...asTyped(), test: [id], as, account });
       const x = got[id] = r.results[0];
       const api = x.protocol ? apiLabel(x.protocol) : "", took = ledTook(x.ms), model = id, error = (x.status ? x.status + " · " : "") + x.error;
-      status((x.ok ? (api ? t("{model} answered via {api} in {took}", { model, api, took }) : t("{model} answered in {took}", { model, took }))
-        : api ? t("{model} didn't answer via {api}: {error}", { model, api, error }) : t("{model} didn't answer: {error}", { model, error })) + (p.testPicks && x.account ? " · " + x.account : ""), x.ok ? "ok" : "err");
+      status((x.queued ? model + ": " + queuedSaid(x) : x.ok ? (api ? t("{model} answered via {api} in {took}", { model, api, took }) : t("{model} answered in {took}", { model, took }))
+        : api ? t("{model} didn't answer via {api}: {error}", { model, api, error }) : t("{model} didn't answer: {error}", { model, error })) + (p.testPicks && x.account ? " · " + x.account : ""), x.queued ? "" : x.ok ? "ok" : "err");
     } catch (e) { delete got[id]; testErr(e); }
     draw();
   };
@@ -16064,6 +16074,7 @@ function loadQuotas(asked, again) {
       if (quotasLoading === p) quotasLoading = null;
       if (!same) renderQuotas(true);
       if (view === "usage") loadUpstream();
+      globalThis.markBalances?.();
       if (reading && !quotasLater && ++quotasTries <= 20) quotasLater = setTimeout(() => { quotasLater = 0; loadQuotas(false, true); }, 1500);
       if (mode === "panel" && state?.agents && !panelAccts) panelAccounts();
     });
@@ -16478,20 +16489,6 @@ function acctsMore(provider, n) {
     backToReader($("#view-usage"));
   };
   return b;
-}
-// keysSum: the keys' balances added up, written as theirs are ("$12.50"),
-// when each is one amount in the same currency; "" otherwise
-function keysSum(subs) {
-  let total = 0, unit = null;
-  for (const q of subs) {
-    const m = !q.error && !q.balanceParts?.length && (q.balance || "").match(/^([^\d-]*)(-?\d[\d,]*(?:\.\d+)?)(\D*)$/);
-    if (!m) return "";
-    const u = m[1] + "|" + m[3];
-    if (unit != null && u !== unit) return "";
-    unit = u;
-    total += Number(m[2].replace(/,/g, ""));
-  }
-  return balanceAmount(subs[0], total);
 }
 // the card's button: the accounts in brief (or, in the panel, left out) in
 // full, its count the ones it opens; or, every one in full, the ones it
@@ -17582,7 +17579,8 @@ function renderPanelUse() {
     const split = panelUseProvider ? "model" : panelUseSplit;
     const chart = el("div", "led-chart"), rank = el("div", "led-rank");
     card.append(head, chart, rank);
-    out.push(tot, card);
+    // the heatmap is plugins/usage/page.js's, once it has run: a read can come back before
+    out.push(tot, card, self.panelHeatCard?.() || "");
     box.replaceChildren(...out);
     slide(per, "puPeriod");
     slide(met, "puMetric");
@@ -19588,6 +19586,11 @@ function applyPrefs(s, rate) {
   const look = (s.accent || "") + "," + (s.wallpaper || "");
   if (look !== (applyPrefs.look ??= window.bootPrefs?.look ?? ",")) applyPrefs.look = look, import("./appearance.js").then(() => lookPaint(), () => {});
   applyPrefs.ready = true;
+  // a browser tab's title names this magpie (Settings' Name, else
+  // MAGPIE_NAME; starballl on X), as boot.js did for the first paint; the
+  // app's windows keep theirs
+  const named = s.name || s.nameEnv;
+  if (web) document.title = named ? named + " · magpie" : "magpie";
   // accounts hidden while personal data is masked, until chosen otherwise
   window.hideAccounts?.follow(!!s.redactPersonal);
   // this browser's choice from before it was a setting, carried over once
@@ -20018,12 +20021,8 @@ function renderCLI(r) {
   cliAsk?.then((v) => { if (r.isConnected) paint(v); }, () => { if (!cliView) sub.textContent = t("Couldn't tell"); });
 }
 
-// Settings' Download source (#893): where an update's file is downloaded
-// from — GitHub, or a GitHub download mirror put before its URL, the same
-// setting `magpie update mirror` writes. magpie names no mirror of its
-// own; the feed and each file's SHA-256 still come from the release's own
-// file that doesn't match is never installed. A draft and its error are
-// kept across the page being drawn again.
+// Settings' Download source (#893): a GitHub mirror before github.com, as
+// `magpie update mirror` writes; the feed and SHA-256 stay usemagpie.ai's
 let mirrorEditing = false, mirrorDraft = "", mirrorErr = "";
 function setUpdateMirror(mirror) {
   return writingPrefs(api("settings/update-mirror", { mirror }))
@@ -20039,14 +20038,14 @@ function renderUpdateMirror(r, s) {
   const sub = el("div", "sub");
   who.append(sub);
   const m = s.updateMirror || "";
-  sub.textContent = mirrorErr || (m ? t("Updates are downloaded through this mirror, each checked against the release's own checksum")
-    : t("Updates are downloaded from GitHub; a mirror can be used where GitHub is slow"));
+  sub.textContent = mirrorErr || (m ? t("Updates are downloaded from usemagpie.ai, and through this mirror when that fails, each checked against usemagpie.ai's checksum")
+    : t("Updates are downloaded from usemagpie.ai, and from GitHub when that fails; a mirror can stand in for GitHub where it is slow"));
   // the docs' Mirrors page says which mirror and how (WeltAn_X on X)
   const more = el("button", "sub-more", t("How mirrors work"));
   more.onclick = () => api("open", { url: "https://usemagpie.ai/docs/" + ({ zh: "zh/", "zh-TW": "zh/", ja: "ja/" }[locale] || "") + "mirrors#settings" }).catch(() => {});
   sub.append(" ", more);
   sub.classList.toggle("err", !!mirrorErr);
-  sub.title = t("The update and its checksum always come from this release's repository; a file from the mirror that doesn't match it is not installed.");
+  sub.title = t("The update and its checksum always come from usemagpie.ai; a file from the mirror that doesn't match it is not installed.");
   if (mirrorEditing) return mirrorEdit(r, s, sub, val);
   if (m) {
     const official = el("button", "text", t("Remove mirror"));
@@ -20070,6 +20069,8 @@ function renderSettings() {
   window.drawLook ? drawLook(s, keep) : import("./appearance.js").then(() => drawLook(s, keep), () => {});
   renderLangPick(s, keep);
   renderGatewayMode(s);
+  // Network and sharing's Advanced: what this magpie is called
+  window.instanceName ? instanceName(s, keep) : import("./instancename.js").then(() => instanceName(s, keep), () => {});
   window.renderNavPages ? renderNavPages() : import("./navpages.js").then(() => renderNavPages(), () => {});
   // a browser tab has its own zoom, and magpie leaves it to it
   $("#textSizeRow").hidden = web;
@@ -21266,7 +21267,7 @@ function renderAlerts(s, keep) {
 
 // AGENT_PREFS: an agent's own settings rows, by its id (openAgentPrefs)
 const AGENT_PREFS = {
-  codex: ["codexAgentsV1Row", "codexOpenRow", "codexSubagentModelRow", "codexServiceTierRow", "codexClientRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
+  codex: ["codexAgentsV1Row", "codexOpenRow", "codexSubagentModelRow", "codexServiceTierRow", "codexClientRow", "fullContextRow", "codexAsyncRow", "codexTitlesRow", "codexDescriptionsRow", "codexPredictionsRow", "codexSuggestionsRow", "codexAutoReviewRow", "codexMemoriesRow"],
   claude: ["fullContextRow"],
   grok: ["fullContextRow"],
 };
@@ -21369,6 +21370,7 @@ function renderAgentPrefs() {
     ["#codexTitlesRow", "Names each thread in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
     ["#codexDescriptionsRow", "Writes each thread’s short description in a hidden request of its own; same as the session, it goes on the session’s model, as Codex sends it when that is one of Codex’s own"],
     ["#codexPredictionsRow", "Guesses your next message for the composer, reading the whole conversation again each time; same as the session, it goes on the session’s model"],
+    ["#codexSuggestionsRow", "Finds prompts for Codex’s home page in the background, reading the project and connected apps, then checks them for safety; Codex’s own pick falls back to the provider’s default model, often auto. Turn them off in Codex: Settings › Configuration › Homepage suggestions"],
     ["#codexAutoReviewRow", "Decides an approval in your place when Codex’s approvals are on auto-review; Codex’s own pick is codex-auto-review, else the conversation’s model at low effort; on a ChatGPT Free plan, where codex-auto-review isn’t free, unset follows the session"],
     ["#codexMemoriesRow", "Writes Codex’s memories of past threads, in the background; same as the session, on the session’s model, or on Codex’s own memory models when that is one of Codex’s own"],
   ]) $(row + " .who").title = t(en);
@@ -21427,6 +21429,7 @@ function renderAgentPrefs() {
   renderCodexTitles(s);
   renderCodexDescriptions(s);
   renderCodexPredictions(s);
+  renderCodexSuggestions(s);
   renderCodexAutoReview(s);
   renderCodexMemories();
   renderCodexSubagentModel();
@@ -21478,29 +21481,40 @@ const namedIn = (models) => (id) => {
   const m = models.find((x) => x.id === id);
   return m ? `${m.name || m.id} · ${m.providerName}` : id;
 };
-// codexSidePick is the picker for where one of Codex's side requests goes
-// (descriptions, predictions, titles): as Codex sends it, off, or a model of
-// magpie's
-function codexSidePick(s, key, aria, none, path) {
-  const models = s.titleModels || [];
-  const named = namedIn(models);
-  const v = s[key] || "";
+// the button a preference's row picks its value with, named for readers
+function condButton(aria) {
   const b = el("button", "rt-cond on");
   b.type = "button";
   b.setAttribute("aria-label", t(aria));
-  if (v === "off") b.append(el("span", "", t("Off")));
-  else if (v) b.append(icon(models.find((x) => x.id === v)?.icon || "generic"), el("span", "", named(v)));
-  else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
-  b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key, label: "model", value: v, options: [
-    { value: "", label: t(SAME_SESSION), note: t("as Codex sends them when the session is on Codex’s own model"), icon: "generic", reset: true },
-    { value: "off", label: t("Off"), note: t(none), reset: true },
-    ...models.map(modelOpt)],
+  return b;
+}
+
+// codexPick is the picker for the model one of Codex's side requests goes
+// on: the first options (as Codex sends it, off, the session's) or a model
+// of magpie's, posted to settings/<path>
+function codexPick(s, key, aria, path, first) {
+  const models = s.titleModels || [];
+  const v = s[key] || "";
+  const o = first.find((x) => x.value === v);
+  const b = condButton(aria);
+  if (o) b.append(...(o.icon ? [icon(o.icon)] : []), el("span", "", o.label));
+  else b.append(icon(models.find((x) => x.id === v)?.icon || "generic"), el("span", "", namedIn(models)(v)));
+  b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key, label: "model", value: v, options: [...first, ...models.map(modelOpt)],
   onPick: (id) => {
     if (id === v) return;
     prefWrite(api("settings/" + path, { model: id }));
   } }, b, ev);
   $("#" + key + "Pick").replaceChildren(b);
 }
+
+// descriptions, predictions and titles: as Codex sends it, off, or a model
+const codexSidePick = (s, key, aria, none, path) => codexPick(s, key, aria, path, [
+  { value: "", label: t(SAME_SESSION), note: t("as Codex sends them when the session is on Codex’s own model"), icon: "generic", reset: true },
+  { value: "off", label: t("Off"), note: t(none), reset: true }]);
+
+// suggestions and auto-review: Codex's own pick unless one is set here
+const codexOwnPick = (s, key, aria, path, more = []) => codexPick(s, key, aria, path, [
+  { value: "", label: t("Codex’s own pick"), note: t("as Codex picks it"), icon: "openai", reset: true }, ...more]);
 
 // Codex's service tiers, its own names (JackyFill on X)
 const CODEX_TIERS = [
@@ -21515,9 +21529,8 @@ function renderCodexServiceTier(s) { codexMenuPick(CODEX_TIERS, s.codexServiceTi
 // posted on its own to settings/<path> as {<field>: value}
 function codexMenuPick(opts, v, label, key, field) {
   const cur = opts.find((o) => o.v === (v || "")) || opts[0];
-  const b = el("button", "rt-cond on", t(cur.name));
-  b.type = "button";
-  b.setAttribute("aria-label", t(label));
+  const b = condButton(label);
+  b.append(t(cur.name));
   b.setAttribute("aria-haspopup", "menu");
   b.onclick = (e) => {
     e.stopPropagation();
@@ -21544,25 +21557,13 @@ function renderCodexPredictions(s) { codexSidePick(s, "codexPredictions", "Codex
 // Codex's thread titles (#705)
 function renderCodexTitles(s) { codexSidePick(s, "codexTitles", "Codex thread titles", "no title, nothing sent", "codex-titles"); }
 
+// the model the Codex app's prompt suggestions go on (@0xcb198609 on X);
+// Codex's own setting turns them off, said in the row's tooltip
+function renderCodexSuggestions(s) { codexOwnPick(s, "codexSuggestions", "Codex prompt suggestions", "codex-suggestions"); }
+
 // Codex's auto-review model (#938)
 function renderCodexAutoReview(s) {
-  const models = s.titleModels || [];
-  const v = s.codexAutoReview || "";
-  const m = models.find((x) => x.id === v);
-  const b = el("button", "rt-cond on");
-  b.type = "button";
-  b.setAttribute("aria-label", t("Codex auto-review model"));
-  if (v) b.append(icon(m?.icon || "generic"), el("span", "", m ? `${m.name || m.id} · ${m.providerName}` : v == "session" ? t(SAME_SESSION) : v));
-  else b.append(icon("openai"), el("span", "", t("Codex’s own pick")));
-  b.onclick = (ev) => openPicker({ id: "", name: "", fields: [] }, { key: "codexAutoReview", label: "model", value: v, options: [
-    { value: "", label: t("Codex’s own pick"), note: t("as Codex picks it"), icon: "openai", reset: true },
-    { value: "session", label: t(SAME_SESSION), icon: "generic" },
-    ...models.map(modelOpt)],
-  onPick: (id) => {
-    if (id === v) return;
-    prefWrite(api("settings/codex-auto-review", { model: id }));
-  } }, b, ev);
-  $("#codexAutoReviewPick").replaceChildren(b);
+  codexOwnPick(s, "codexAutoReview", "Codex auto-review model", "codex-auto-review", [{ value: "session", label: t(SAME_SESSION), icon: "generic" }]);
 }
 
 // renderCodexMemories: Codex's memories model (#985), its card's field, in
@@ -21576,9 +21577,7 @@ function renderCodexMemories() {
   row.hidden = gatewayMode || !f || (!f.options.length && !f.value);
   if (row.hidden) return;
   const opt = optionFor(f, f.value);
-  const b = el("button", "rt-cond on");
-  b.type = "button";
-  b.setAttribute("aria-label", t("Codex memories model"));
+  const b = condButton("Codex memories model");
   if (f.value) b.append(icon(opt?.icon || "generic"), el("span", "", optNamed(opt, f.value)));
   else b.append(icon("generic"), el("span", "", t(SAME_SESSION)));
   b.onclick = (ev) => openPicker(a, f, b, ev);
@@ -21596,9 +21595,7 @@ function renderCodexSubagentModel() {
   if (row.hidden) return;
   const said = codexSubSaid(a, f);
   const main = a.fields.find((x) => x.key === "model");
-  const b = el("button", "rt-cond on");
-  b.type = "button";
-  b.setAttribute("aria-label", t("Codex subagent model"));
+  const b = condButton("Codex subagent model");
   const own = f.value && f.value !== CODEX_SUB_LEAD;
   b.append(icon((own ? optionFor(f, f.value)?.icon : main && optionFor(main, main.value)?.icon) || "generic"), el("span", "", own ? optNamed(optionFor(f, f.value), f.value) : said.name));
   b.onclick = (ev) => openPicker(a, f, b, ev);
@@ -22183,6 +22180,8 @@ function pmSub(m) {
     if (m.via) return { "Neural Engine": t("On, with CoreML on the Neural Engine"), GPU: t("On, with CoreML on the GPU"), CPU: t("On, with CoreML on the CPU") }[m.device] || t("On, with CoreML");
     // the Intel build on Apple silicon: Go, translated, several times slower
     if (m.rosetta) return t("On, slowly under Rosetta: the next update installs magpie for Apple silicon");
+    // the x64 build on Windows on Arm, emulated
+    if (m.emulated) return t("On, slowly under x64 emulation: the next update installs magpie for Arm");
     if (m.gpuError && m.model === "astrlink-guard") return t("On, on the CPU: CoreML failed ({error})", { error: m.gpuError });
     // Privacy Filter lost the GPU: to its driver resetting it (device
     // lost), or to a fault; the GPU is tried again at gpuAgain
@@ -23362,7 +23361,8 @@ async function show(v) {
   if (v === "providers" && providersBehind) renderProviders();
   if (v === "providers" || rtView(v) || providersPage(v)) loadProviders().then(back, statusErr);
   // Routing's accounts' windows as Usage read them (#1833), never an asked read
-  if (rtView(v) && (!quotas || Date.now() - quotasAt > 60e3)) loadQuotas();
+  // and Providers' balances (rowBalance, plugins/usage/page.js)
+  if ((rtView(v) || v === "providers" && !featuresOff.has("usage")) && (!quotas || Date.now() - quotasAt > 60e3)) loadQuotas();
   if (v === "settings") (settingsLoad = loadSettings()).then(back, statusErr);
   if (v === "plugins") window.loadPlugins?.()?.then(back);
   syncTitle();
