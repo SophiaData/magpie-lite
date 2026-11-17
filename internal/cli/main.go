@@ -173,6 +173,10 @@ const usage = `magpie — one place to pick every agent's model
   magpie sessions --days N|today|all [--model <m>] [--folder <f>] [--json]
                                   what every session spent, day by day, with the top models and folders (7 days)
   magpie sessions read [on|off all|<agent>…]   which agents' session history magpie may read (none until allowed)
+  magpie sessions search <words…> [--agent <a>] [--days N|today|all] [--limit N] [--json]
+                                  every agent's sessions that said those words, newest first, with where
+  magpie sessions show <agent:id> [--find <words>] [--from N] [--max-chars N] [--json]
+                                  one session's conversation as text, from where the words were said
   magpie quota [<provider>] [--json]  what is left of every subscription, plan and key balance
   magpie quota wait <provider|account> [--timeout <d>] [--quiet]
                                   block until that subscription (any of its accounts) or account has allowance again
@@ -189,7 +193,7 @@ const usage = `magpie — one place to pick every agent's model
                                   wrote down (a service started with MAGPIE_ADDR needs none of them); a restart waits at most 10
                                   minutes for requests in flight, --force restarts at once; --proxy: an
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
-                                  before the github.com URL (none unless given; still checked against the release's own SHA-256)
+                                  before the github.com URL (none unless given; still checked against usemagpie.ai's SHA-256)
   magpie update mirror [<prefix>|off]  the mirror every update, the app's own too, is downloaded through
   magpie update channel [stable|daily|every]  which versions updates offer: stable (one a week), daily (one
                                   a day that passed its tests), an urgent one at once on both, or every
