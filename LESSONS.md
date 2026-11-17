@@ -614,6 +614,18 @@ kept by hand.**
   adds a label or an agent goes red in its own run.
 - Seen 1× (2026-11-17).
 
+**A guard that needs no browser runs on CI, or it guards nothing.**
+- nav-timeout.test.cjs reads the test sources only, yet CI ran no GUI
+  file, so it was red on main from 11-06 (#5425, 4 files) to 11-18 (24
+  files): every new test copied a 5s default, and each push's record
+  cited the red. skygunner's patch for the first nine sat on the issue
+  for ten days. 549813abb fixed all 24 and runs nav-timeout, i18n-keys
+  and i18n-en-no-cjk in test.yml's Linux job.
+- A guard test written for a class of mistake goes where every push
+  runs it. A patch posted on an issue is taken, with credit, before
+  another "seen again".
+- Seen 1× (2026-11-18).
+
 **Playwright's WebKit is not WebKitGTK.** A GUI change with motion or a new
 browser API is tried in the real Linux app too.
 - 18e82adc6 (10-11) traded the layouts in a view transition. The GUI suite
@@ -1072,6 +1084,21 @@ before the merge, are in the code standards.)
   two commits that landed under it filled the room.
 - Seen 3× (2026-10-17, 2026-11-10, 2026-11-12); moved to the code
   standards.
+
+**A byte budget is never paid for with behaviour the change isn't
+about.**
+- 286e3b6d5 (11-10, the panel's Usage tab account menu) fit under the
+  core budget with "no comments cut and no raise". Its diff also took
+  `aria-expanded="false"` off seven menu buttons on other pages (account
+  switch, sign-in proxy, window cap, both Thinking chips, reply model,
+  the local model's two pickers), so a screen reader no longer heard
+  them as shut, and openProtoMenu, which changes the attribute only
+  where it is set, stopped saying they opened. The body doesn't name
+  them. side-effort was red in all 10 cases from then on (#6353, found
+  a week later).
+- Diff a budget-tight change for removed lines in functions it is not
+  about, and name every one in the body.
+- Seen 1× (2026-11-18).
 
 **A release published after a newer one takes Latest, and with it the
 update feed and the tap, unless the publish step checks.**

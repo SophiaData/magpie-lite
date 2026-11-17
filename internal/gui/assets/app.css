@@ -1628,10 +1628,10 @@ body.masked :hover > .acct-eye, body.masked .pq-card:hover .acct-eye, body.maske
 .led-spd.by-prov td.nm { min-width: 112px; }
 .led-spd th.act, .led-spd td.act { width: 1px; padding-left: 8px; }
 .led-spd td.off { color: var(--amber); }
-.led-spd-check { height: 20px; padding: 0 2px; font-size: 11px; transition: opacity 150ms ease; }
-@media (hover: hover) and (pointer: fine) {
-  .led-spd tr:not(:hover) .led-spd-check:not(:focus-visible) { opacity: 0; }
-}
+/* always there, quiet until its row is pointed at (skingstyle48487: a
+   button shown only on hover went unfound) */
+.led-spd-check { height: 20px; padding: 0 2px; font-size: 11px; color: var(--muted); }
+.led-spd tr:hover .led-spd-check, .led-spd-check:focus-visible { color: var(--ctl-fg); }
 .led-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 8px; }
 .led-bar .grow { flex: 1; }
 .led-by { font-size: 11.5px; color: var(--muted); }
@@ -3367,7 +3367,11 @@ body.window .ag-sk-icon { width: 22px; height: 22px; border-radius: 6px; }
    key squeezed by them on a narrow window slid its copy button under the
    pointer that came to drag the row */
 #gatewayKeys .acc > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set) { flex-shrink: 8; }
-#gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; }
+/* On a narrow window they keep that room when not hovered, only faded
+   out: four of them (key-redact made four) took ~90px on hover, the key
+   gave it up and its copy button slid under the pointer that came to
+   drag the row, so the drag never started (#6268) */
+@media (min-width: 521px) { #gatewayKeys .acc:not(:hover) > :is(.key-quotas, .key-conc, .key-tier, .key-redact):not(.set, .open, :focus) { max-width: 0; padding: 0; margin-left: -9px; box-shadow: none; } }
 /* the MCP servers a key held to some may use: cut, and gives way first */
 #gatewayKeys .amodels.key-mcp { display: inline-block; flex: 0 1 auto; min-width: 24px; max-width: 180px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* a read-only key's tag, always shown, never a button */
@@ -3765,6 +3769,9 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
 .editor .proxy-row input.proxy-url.off { display: none; }
 .editor .proxy-row .gone { display: none; }
 .editor .proxy-row .proxy-saved { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.editor .proxy-row .proxy-test { flex: none; }
+.editor .proxy-row .proxy-saved[hidden] + .proxy-test { display: none; }
+.editor .proxy-pick .hint.err { color: var(--red); }
 .saved-proxy .sub { overflow-wrap: anywhere; }
 .proxy-form { flex-wrap: wrap; }
 .proxy-form .proxy-controls { justify-content: flex-end; flex: 1 1 100%; }
@@ -3908,20 +3915,21 @@ body:not(.side-nav) #addSheet > .row-head.stuck::before { opacity: 1; box-shadow
    Connect's five APIs on a narrow one, and Usage → Sessions' agents,
    which #929 left widening the whole page until its last agent's
    filter was only reachable by dragging the page sideways, and Plugins'
-   kinds on GitHub, wider than a 420px window in Japanese */
-.segs.regions, .connect .segs, .pm-bar .segs { max-width: 100%; overflow-x: auto; }
+   kinds on GitHub, wider than a 420px window in Japanese, and Usage's
+   chart metrics, wider than a 375px phone in German (#5869) */
+.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs { max-width: 100%; overflow-x: auto; }
 /* no scrollbar-width here: Chromium (WebView2) then drops every
    ::-webkit-scrollbar rule and draws Windows' classic bar, arrows and all,
    under the strip; the app's thin thumb instead, slimmer still */
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { height: 6px; }
-:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar { height: 6px; }
+:where(body:not(.mac)) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar-thumb { border-width: 1px; }
 /* on a Mac they scroll with no bar, as a Mac's own tab strips do: the
    system's overlay bar showed over the options' lower half for a moment
    after each scroll, and a click there went to the bar, which paged the
    strip sideways and picked nothing (#1620) */
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs) { scrollbar-width: none; }
-:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs)::-webkit-scrollbar { display: none; }
-.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt { flex: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs) { scrollbar-width: none; }
+:where(body.mac) :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs)::-webkit-scrollbar { display: none; }
+.segs.regions .opt, .connect .segs .opt, .pm-bar .segs .opt, .led-bar .segs .opt { flex: none; }
 /* a custom provider's five Base URL APIs wrap to a second row where the
    editor is too narrow for them (#1346); the thumb follows the row */
 .segs.base-apis { max-width: 100%; flex-wrap: wrap; }
@@ -4821,7 +4829,7 @@ body.panel .modal { padding: 16px 12px; }
   body.web .segs .thumb { border-radius: 6px; }
   body.web .segs .opt { height: 28px; padding: 0 11px; font-size: 13px; }
   body.web .segs .opt::after { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
-  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
+  body.web :is(.segs.regions, .connect .segs, .pm-bar .segs, .led-bar .segs, .ctx-contents-head .segs, .editor.importapps .approw .segs) { overflow-y: hidden; }
   body.web .text { padding: 8px 10px; }
   body.web .copy { min-width: 44px; }
   body.web .fields { width: 100%; grid-template-columns: minmax(0, 1fr) minmax(0, 124px); }
