@@ -72,8 +72,9 @@ const usage = `magpie — one place to pick every agent's model
   magpie rename <old> <new>       rename a profile
   magpie rm <name>                delete a profile
 
-  magpie backup [--no-keys] [--no-library] [file]    providers, keys, settings, profiles, agent models and the library in one file, sealed with a passphrase
-  magpie restore [--no-agents] [--no-library] <file> put a backup in on this machine
+  magpie backup [--no-keys] [--no-library] [file]    providers, keys, settings, profiles, agent models, the library and the usage history in one file, sealed with a passphrase
+  magpie restore [--no-agents] [--no-library] <file> put a backup in on this machine; its usage history is merged with the one here
+                                                     --no-usage on either: the usage history left out
                                                      --sign-ins on backup: the subscriptions' and plugins' sign-ins too, sealed (off unless given); --no-sign-ins on restore leaves them out
   magpie uninstall [--yes]                           disconnect every agent, putting back what each had, then remove magpie's service and files
                                                      --keep-data: all but deleting magpie's settings, providers and usage
@@ -193,7 +194,7 @@ const usage = `magpie — one place to pick every agent's model
                                   wrote down (a service started with MAGPIE_ADDR needs none of them); a restart waits at most 10
                                   minutes for requests in flight, --force restarts at once; --proxy: an
                                   http(s):// or socks5:// proxy for it; --mirror: a GitHub download mirror put
-                                  before the github.com URL (none unless given; still checked against the release's own SHA-256)
+                                  before the github.com URL (none unless given; still checked against usemagpie.ai's SHA-256)
   magpie update mirror [<prefix>|off]  the mirror every update, the app's own too, is downloaded through
   magpie update channel [stable|daily|every]  which versions updates offer: stable (one a week), daily (one
                                   a day that passed its tests), an urgent one at once on both, or every

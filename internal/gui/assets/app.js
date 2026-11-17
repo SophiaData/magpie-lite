@@ -162,6 +162,9 @@ async function api(path, body, heads, signal) {
       err.code = data.code;
       if (data.offline === "stage" || data.offline === "disconnect") err.offline = data.offline;
     }
+    // a proxy's failure magpie can explain (netproxy.Why): proxies.js says
+    // it in the reader's language
+    if (data?.code === "proxy_why") err.proxy = data;
     // magpie has no models to connect an agent to yet: said in the
     // reader's language
     if (data?.code === "no_models") err.message = t("Add a provider or subscription in magpie first, then connect {agent}", { agent: data.agent });
@@ -9701,7 +9704,9 @@ function drawEditor(p, presetID) {
     if (p.drawIds?.length) ed.append(...renderDrawers(p));
     if (p.filmIds?.length) ed.append(...renderVideomakers(p));
     // the subscription's own warm-up, check-in and resets first
-    if (subOf(a.agent)) advIn.append(...provPrefsField(a.agent));
+    // and Advanced opened when one is on, as for Routing: the user who set
+    // a warm-up finds it where it went (ChrisYagao on X: "我的预热去哪里了")
+    if (subOf(a.agent)) advIn.append(...provPrefsField(a.agent, () => !(advanced && advanced.of === of) && provPrefsOn(a.agent) && (adv.open = true)));
     // a subscription's window too: Codex's backend says 272K for models
     // that take 872K (#120)
     const cx = input(draft.contexts || "", t("e.g. 128k · or gpt-6=1m, comma separated"));
@@ -9988,7 +9993,7 @@ function drawEditor(p, presetID) {
   if (custom) {
     const [stk, scb] = tick(t("Searches the web by itself"), !!draft.searches);
     scb.onchange = () => { draft.searches = scb.checked; };
-    const row = field(t("Web search"), stk, t("For a relay in front of Anthropic's or OpenAI's own API: Claude Code's WebSearch and Codex's web_search go to it as they were sent, not through magpie's search. magpie doesn't automatically search with it for other models, but you can name it as the searcher."));
+    const row = field(t("Web search"), stk, t("For a relay in front of Anthropic's or OpenAI's API: Claude Code's WebSearch and Codex's web_search and web.run go to it as sent, not through magpie's search. magpie doesn't automatically search with it for other models, but you can name it as the searcher."));
     showSearch = () => { for (const e of row) e.style.display = searchable() ? "" : "none"; };
     showSearch();
     advIn.append(...row);
@@ -19805,10 +19810,14 @@ function remountProvPrefs() {
   homeProvPrefRows();
   provPrefMount = null;
 }
+// provPrefsOn: the agent's warm-up or daily check-in is on
+const provPrefsOn = (a, s = prefs) => !!(a == "codex" ? s.codexWarmup || warmTimes(s.codexWarmAts, s.codexWarmAt).length
+  : a == "claude" ? s.claudeWarmup || warmTimes(s.claudeWarmAts, s.claudeWarmAt).length
+  : s.checkinPlugins?.find((p) => p.id == a)?.on ?? s[PLUGIN_CHECKIN_INHERITS[a]]);
 // provPrefsField: a subscription's warm-up, check-in and resets as the
 // editor's own fields, under Advanced (the owner, 11-09: a block of cards
 // under Routing took most of the editor)
-function provPrefsField(agent) {
+function provPrefsField(agent, opened) {
   // a gateway keeps them: they run on its own accounts (#1065)
   if (!PROV_PREFS[agent] && !(prefs?.checkinPlugins || []).some((x) => x.id === agent) && prefs) return [];
   const keys = [...(PROV_PREFS[agent] || []), "ci-plugin"];
@@ -19820,8 +19829,8 @@ function provPrefsField(agent) {
     slot.hidden = true;
     return slot;
   });
-  if (prefs) mountProvPrefs(slots, agent);
-  else loadSettings().then(() => slots[0].isConnected && mountProvPrefs(slots, agent), () => {});
+  if (prefs) mountProvPrefs(slots, agent), opened?.();
+  else loadSettings().then(() => slots[0].isConnected && (mountProvPrefs(slots, agent), opened?.()), () => {});
   return slots.flatMap((x) => x.fieldRow);
 }
 // a provider's settings found by Settings' search, drawn by provlinks.js
@@ -20057,12 +20066,8 @@ function renderCLI(r) {
   cliAsk?.then((v) => { if (r.isConnected) paint(v); }, () => { if (!cliView) sub.textContent = t("Couldn't tell"); });
 }
 
-// Settings' Download source (#893): where an update's file is downloaded
-// from — GitHub, or a GitHub download mirror put before its URL, the same
-// setting `magpie update mirror` writes. magpie names no mirror of its
-// own; the feed and each file's SHA-256 still come from the release's own
-// file that doesn't match is never installed. A draft and its error are
-// kept across the page being drawn again.
+// Settings' Download source (#893): a GitHub mirror before github.com, as
+// `magpie update mirror` writes; the feed and SHA-256 stay usemagpie.ai's
 let mirrorEditing = false, mirrorDraft = "", mirrorErr = "";
 function setUpdateMirror(mirror) {
   return writingPrefs(api("settings/update-mirror", { mirror }))
@@ -20078,14 +20083,14 @@ function renderUpdateMirror(r, s) {
   const sub = el("div", "sub");
   who.append(sub);
   const m = s.updateMirror || "";
-  sub.textContent = mirrorErr || (m ? t("Updates are downloaded through this mirror, each checked against the release's own checksum")
-    : t("Updates are downloaded from GitHub; a mirror can be used where GitHub is slow"));
+  sub.textContent = mirrorErr || (m ? t("Updates are downloaded from usemagpie.ai, and through this mirror when that fails, each checked against usemagpie.ai's checksum")
+    : t("Updates are downloaded from usemagpie.ai, and from GitHub when that fails; a mirror can stand in for GitHub where it is slow"));
   // the docs' Mirrors page says which mirror and how (WeltAn_X on X)
   const more = el("button", "sub-more", t("How mirrors work"));
   more.onclick = () => api("open", { url: "https://usemagpie.ai/docs/" + ({ zh: "zh/", "zh-TW": "zh/", ja: "ja/" }[locale] || "") + "mirrors#settings" }).catch(() => {});
   sub.append(" ", more);
   sub.classList.toggle("err", !!mirrorErr);
-  sub.title = t("The update and its checksum always come from this release's repository; a file from the mirror that doesn't match it is not installed.");
+  sub.title = t("The update and its checksum always come from usemagpie.ai; a file from the mirror that doesn't match it is not installed.");
   if (mirrorEditing) return mirrorEdit(r, s, sub, val);
   if (m) {
     const official = el("button", "text", t("Remove mirror"));
@@ -20176,8 +20181,7 @@ function renderSettings() {
     (v) => savePrefs({ ...keep, codexWarmAts: v, codexWarmAt: v[0] || "" }));
   renderWarmAt($("#claudeWarmAtSegs"), $("#claudeWarmAtSub"), warmTimes(s.claudeWarmAts, s.claudeWarmAt), s.claudeWarmup, t("Sent through Claude Code."),
     (v) => savePrefs({ ...keep, claudeWarmAts: v, claudeWarmAt: v[0] || "" }));
-  renderWarmAtOwn(s);
-  renderAutoResetOwn(s);
+  renderAutoResetOwn(s); // and each account's own warm-up time
   renderWarmNow("codex", s.codexUsers, "#warmNowRow");
   renderWarmNow("claude", s.claudeUsers, "#claudeWarmNowRow");
   // each built-in vendor's daily check-in, shown while one of its
@@ -20822,9 +20826,8 @@ function renderTrayUsage(s, keep) {
   $("#trayPaceRow").hidden = !ids.length || document.documentElement.classList.contains("win");
   $("#trayPaceSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.trayPace ? "on" : "off",
     (v) => savePrefs({ ...keep, trayPace: v === "on" })));
-  // a card's windows
-  if (!ids.length) $("#trayWindowsRow").hidden = $("#trayNumberRow").hidden = true;
-  else import("./traywindows.js").then(() => trayWindowsRow(s, keep, ids, mac), () => {});
+  // a card's windows, Windows' figure and Claude's logo, each gone with no card (traywindows.js)
+  import("./traywindows.js").then(() => trayWindowsRow(s, keep, ids, mac), () => {});
   // and the cost beside magpie's own totals, in their cards and the
   // tooltip, which every OS shows with or without cards (BussanQ)
   $("#trayCostSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], s.trayNoCost ? "off" : "on",
@@ -21156,58 +21159,10 @@ function renderWarmAt(box, sub, ats, onReset, via, save) {
   box.append(segs([["off", t("Off")], ["on", t("On")]], ats.length ? "on" : "off", (v) => save(v === "on" ? (ats.length ? ats : ["06:00"]) : [])));
 }
 
-// Settings › Usage's Codex auto-use rows, drawn by autoresetown.js
+// Codex's auto-use rows and each account's own warm-up time, drawn by autoresetown.js
 function renderAutoResetOwn(s) {
   if (window.autoResetOwnPaint) return autoResetOwnPaint(s);
   import("./autoresetown.js").then(() => autoResetOwnPaint(s), statusErr);
-}
-
-// renderWarmAtOwn: each ChatGPT account's own daily time (#957,
-// codexWarmAtOf), shown with two accounts or one with its own
-function renderWarmAtOwn(s) {
-  const list = $("#codexWarmList");
-  list.querySelectorAll(".warm-own").forEach((r) => r.remove());
-  const own = s.codexWarmAtOf || {};
-  const users = [...(s.codexUsers || [])];
-  for (const u of Object.keys(own)) if (!users.some((x) => x.toLowerCase() === u)) users.push(u);
-  if (users.length < 2 && !Object.keys(own).length) return;
-  const save = async (user, at) => {
-    try {
-      prefs = await writingPrefs(api("settings/codex-warm-at", { user, at }));
-      if (state) state.settings = prefs;
-      renderSettings();
-    } catch (e) {
-      statusTErr(e);
-      renderSettings();
-    }
-  };
-  for (const user of users) {
-    const at = own[user.toLowerCase()];
-    const mode = at === undefined ? "same" : at === "off" ? "off" : "own";
-    const r = el("div", "row pref warm-own");
-    r.dataset.user = user;
-    const who = el("div", "who");
-    const name = el("div", "name", user);
-    name.title = user;
-    const sub = el("div", "sub", mode === "own" ? t("Its own time each day")
-      : mode === "off" ? t("Not started at a time of day")
-      : s.codexWarmAt ? t("Same as above, {at}", { at: warmTimes(s.codexWarmAts, s.codexWarmAt).join(", ") }) : t("Same as above, off"));
-    sub.title = t("Give accounts different times and one window starts as another runs out.");
-    who.append(name, sub);
-    const box = el("div", "warm-at");
-    if (mode === "own") {
-      const i = input(at, "06:00", "time");
-      i.className = "at";
-      i.setAttribute("aria-label", t("{who}'s time of day", { who: user }));
-      blurOnEnter(i);
-      i.onchange = () => { if (i.value && i.value !== at) save(user, i.value); };
-      box.append(i);
-    }
-    box.append(segs([["same", t("Same")], ["own", t("Own")], ["off", t("Off")]], mode, (v) =>
-      save(user, v === "same" ? "" : v === "off" ? "off" : s.codexWarmAt || "06:00")));
-    r.append(who, box);
-    $("#warmNowRow").before(r); // Warm up now stays last
-  }
 }
 
 // renderWarmNow is Warm up now: the scheduled warm-up's request to one account at once
@@ -22912,7 +22867,7 @@ function prefsKeep(s) {
     codexWarmAts: warmTimes(s.codexWarmAts, s.codexWarmAt), claudeWarmAts: warmTimes(s.claudeWarmAts, s.claudeWarmAt), workbuddyCheckin: !!s.workbuddyCheckin, traeCheckin: !!s.traeCheckin, minimaxCheckin: !!s.minimaxCheckin, qoderCheckin: !!s.qoderCheckin, checkinAt: s.checkinAt || "", noStats: !!s.noStats, noUsageStats: !!s.noUsageStats, signInLinkOnly: !!s.signInLinkOnly,
     replyModel: s.replyModel || "", noLoopGuard: !!s.noLoopGuard, claudeLeanPrompt: !!s.claudeLeanPrompt, claudeNoExtraUsage: !!s.claudeNoExtraUsage, claudePrintMode: !!s.claudePrintMode, refusalRetries: s.refusalRetries ?? null, retryAfterCap: s.retryAfterCap ?? null,
     noUpdatePill: !!s.noUpdatePill, noAutoUpdate: !!s.noAutoUpdate, updateEvery: s.updateEvery || 360, autoRestart: !!s.autoRestart, noAutoDownload: !!s.noAutoDownload, updateChannel: s.updateChannel || "",
-    trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayNoBird: !!s.trayNoBird, trayNoNumber: !!s.trayNoNumber, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, trayWindows: s.trayWindows || {}, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", videoGen: s.videoGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd", totalCurrency: s.totalCurrency || "", trayCurrency: s.trayCurrency || "",
+    trayUsage: s.trayUsage || "", trayUsageEvery: s.trayUsageEvery || 3, trayNoLogos: !!s.trayNoLogos, trayAnthropicMark: !!s.trayAnthropicMark, trayNoBird: !!s.trayNoBird, trayNoNumber: !!s.trayNoNumber, trayPace: !!s.trayPace, trayNoCost: !!s.trayNoCost, trayWindows: s.trayWindows || {}, vision: s.vision || "", visionEffort: s.visionEffort || "", searcherEffort: s.searcherEffort || "", imageGen: s.imageGen || "", videoGen: s.videoGen || "", imageTimeout: s.imageTimeout || 0, classifyTimeout: s.classifyTimeout || 0, searcher: s.searcher || "", searchFirst: s.searchFirst || "", currency: s.currency || "usd", totalCurrency: s.totalCurrency || "", trayCurrency: s.trayCurrency || "",
     chineseUnits: !!s.chineseUnits, dayStart: s.dayStart || 0, usageAlert: s.usageAlert || 0, balanceAlert: s.balanceAlert || 0, resetReminder: s.resetReminder || 0,
     turnDoneAlert: s.turnDoneAlert || 0, maskAlert: !!s.maskAlert };
 }
@@ -24067,6 +24022,7 @@ function navSubs() {
         all[(to + all.length) % all.length].focus();
       };
       if (above) at.before(box); else at.after(box);
+      box.parentElement.classList.add("with-sub");
     }
     box.setAttribute("aria-label", (at.querySelector("span[data-t]") || at.querySelector("span"))?.textContent || "");
     for (const s of box.querySelectorAll(".nav-s, .nav-sl")) s.remove();
@@ -24230,16 +24186,19 @@ function navSubEnter(box) {
 }
 // a folding list is out of reach at once
 function navSubLeave(box) {
+  // the foot holding Settings' tabs is .with-sub, not :has(), which Safari
+  // before 15.4 can't parse (#5919)
+  const p = box.parentElement, gone = () => { box.remove(); p.classList.toggle("with-sub", !!p.querySelector(":scope>.nav-sub")); };
   box.classList.add("leaving");
   box.removeAttribute("role");
   box.inert = true;
   for (const s of box.querySelectorAll(".nav-s")) s.classList.replace("nav-s", "nav-s-gone");
-  if (navCalm() || navSubs.quiet) { box.remove(); return; }
+  if (navCalm() || navSubs.quiet) { gone(); return; }
   const cs = getComputedStyle(box);
   box.classList.add("moving");
   box.animate([{ height: box.offsetHeight + "px", marginTop: cs.marginTop, marginBottom: cs.marginBottom, opacity: 1 },
     { height: "0px", marginTop: "0px", marginBottom: "0px", opacity: 0 }], { duration: 240, easing: NAV_EASE, fill: "forwards" })
-    .finished.then(() => box.remove(), () => box.remove());
+    .finished.then(gone, gone);
 }
 // the header beside the sidebar: the group, the page, and its tab
 function renderCrumb(items) {
