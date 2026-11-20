@@ -212,6 +212,7 @@ var cliForRoute = map[string]string{
 	"POST /api/settings/mtls/issue":        "magpie mtls issue",
 	"POST /api/settings/mtls/revoke":       "magpie mtls revoke",
 	"GET /api/library":                     "magpie library",
+	"GET /api/library/native":              "magpie library native",
 	"POST /api/library/{what}/{action}":    "magpie library",
 	"GET /api/plugins":                     "magpie plugin",
 	"POST /api/plugins/{op}":               "magpie plugin",
@@ -258,6 +259,7 @@ var notYet = map[string]string{
 	"POST /api/appearance/wallpaper":             W,  // appearance.go: the picture comes from the window's file picker
 	"GET /api/quit":                              W,  // api.go: the window's Quit question
 	"POST /api/quit/disconnect":                  W,  // api.go: the Quit question's Disconnect and quit, which quits the app
+	"POST /api/restart":                          W,  // restart.go: the app starting itself again, as the tray's Restart magpie does
 	"POST /api/page-away":                        W,  // api.go: the page says it went from view, so its caches can go
 	"GET /api/remote":                            W,  // remote.go: another magpie opened in a window of the app
 	"POST /api/remote":                           W,  // remote.go

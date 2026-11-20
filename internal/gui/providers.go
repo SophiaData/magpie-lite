@@ -93,6 +93,9 @@ type modelJSON struct {
 	// provider (#2578): only for a model Claude Desktop, installed here,
 	// is shown and names after its own catalog, "" for every other.
 	Desktop string `json:"desktop,omitempty"`
+	// Disabled is the pattern of Settings' disabled models (#1867) that
+	// turns it off, "" for a model that isn't
+	Disabled string `json:"disabled,omitempty"`
 	// what it costs, USD per million tokens (#819): the price the user set
 	// for it, and its list price, its vendor's else its maker's, before the
 	// provider's price rate
@@ -213,7 +216,8 @@ type providerJSON struct {
 	// (provider.PinHosts), a preset's pointed at their own server too
 	TakesServerPin bool `json:"takesServerPin,omitempty"`
 	// its Responses turns over the Responses WebSocket (provider.Socket,
-	// #5781): auto, on or ""; TakesSocket: a provider of a key with a
+	// #5781): auto, on, off or "" (auto on OpenAI's own API, HTTP
+	// elsewhere: provider.SocketMode); TakesSocket: a provider of a key with a
 	// Responses URL
 	Socket      string `json:"socket"`
 	TakesSocket bool   `json:"takesSocket"`
@@ -1081,7 +1085,10 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	if out.KeyList == nil {
 		out.KeyList = []provider.KeyInfo{}
 	}
-	// a key the gateway passes over after a failure says so on its row
+	// a key the gateway passes over after a failure says so on its row,
+	// with the vendor's words, as an account's row does (accountRests):
+	// without them a key's "400 · out of credit" said nothing of what its
+	// vendor answered (@YsiCing on X)
 	restKey := p.RestKeys()
 	for i, k := range out.KeyList {
 		if !k.On {
@@ -1089,7 +1096,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 		}
 		key := restKey(k)
 		if r, ok := keyRestOf(key); ok {
-			out.KeyList[i].Rest = &provider.KeyRest{Why: r.Why, Status: r.Status, Until: r.Until, Key: key, Probed: r.Probed, Rate: r.Rate}
+			out.KeyList[i].Rest = &provider.KeyRest{Why: r.Why, Status: r.Status, Until: r.Until, Key: key, Probed: r.Probed, By: r.By, Error: r.Error, Rate: r.Rate}
 		}
 	}
 	// and one with a spend cap, what it has spent of it (the gateway
@@ -1198,6 +1205,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 	// the provider's catalogs worked out once, and each model priced once
 	// for its list price and whether it is free
 	pricer := p.Pricer()
+	disabled := provider.DisabledPattern()
 	// each model's provider/model ref, made once: the settings' maps and
 	// every agent's hidden list are looked up by it
 	var refs []string
@@ -1285,6 +1293,7 @@ func providerInfoWith(p provider.Provider, ls provider.Listing, agents []agentUs
 			j.ListedOutput = 0
 		}
 		j.Desktop = desktop[ref]
+		j.Disabled = disabled(p.ID, m.ID)
 		if mp, ok := held.ModelPrices[ref]; ok {
 			if pr, bad := mp.Price(); bad == "" {
 				j.Price = &pr
@@ -1921,7 +1930,7 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			// save that leaves it out keeps it
 			HTTP1 *bool `json:"http1"`
 			// Socket is how its Responses turns go over the Responses
-			// WebSocket (#5781): auto, on, or "" for HTTP alone; a save
+			// WebSocket (#5781): auto, on, off, or "" for its default; a save
 			// that leaves it out keeps it
 			Socket *string `json:"socket"`
 			// LimitRestOff is whether a quota refusal or a 429 leaves it

@@ -425,9 +425,10 @@ type Provider struct {
 	// Discord): SocketAuto tries it and falls back to HTTP, and leaves the
 	// host to HTTP for a while once it refuses the handshake, as
 	// chatgpt.com is; SocketOn tries it every time and falls back without
-	// that. "", the default, is HTTP alone. Only a provider of a key with a
-	// Responses URL takes it (TakesSocket). Set with `magpie provider set
-	// <id> socket=`.
+	// that; SocketOff is HTTP alone. "", the default, is auto on OpenAI's
+	// own API and HTTP alone elsewhere (SocketMode). Only a provider of a
+	// key with a Responses URL takes it (TakesSocket). Set with `magpie
+	// provider set <id> socket=`.
 	Socket string `json:"socket,omitempty"`
 
 	// NativeCompaction has Codex's compaction_trigger go to the provider
@@ -1981,6 +1982,13 @@ func normalize(p Provider) Provider {
 	if p.Decide == "" {
 		p.Decide = p.arkSystemOne()
 	}
+	// one asked at the Gemini Developer API on an AI Studio key, the
+	// google preset's or a custom one, answers gemini-decision-1 at its
+	// Decisions API on the same key (WangYeruo on X: it was asked at
+	// OpenRouter instead, this provider having no decision API)
+	if p.Decide == "" {
+		p.Decide = p.googleDecisions()
+	}
 	if p.Routing != Ordered && p.Routing != Rotate && p.Routing != LeastUsed && p.Routing != Pace && p.Routing != Weighted && p.Routing != FreeFirst && p.Routing != Fastest && p.Routing != Drain && !PluginRouting(p.Routing) {
 		p.Routing = ""
 	}
@@ -2370,6 +2378,16 @@ func (p Provider) Native(model string) Protocol {
 	}
 	if len(out) == 0 {
 		return ""
+	}
+	// a remote magpie's own best API for it (magpie_prefers): its list
+	// names every API the model goes on as it is in the order its provider
+	// speaks them, Chat first, so a GPT its OpenAI key or ChatGPT sign-in
+	// serves best on Responses, and a routing group whose members are,
+	// was asked on Chat here — where OpenAI turns away the max effort
+	// Responses takes (OoopsHh on X: Pi's openai/* and auto/* on
+	// openai-completions, codex/* alone on openai-responses)
+	if pr := p.RemotePrefers(model); pr != "" && slices.Contains(out, pr) {
+		return pr
 	}
 	if p.ResponsesFirst(model) && slices.Contains(out, Responses) {
 		return Responses

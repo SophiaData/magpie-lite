@@ -1,6 +1,6 @@
-// Package update keeps magpie current. This build's releases are published
-// in its own GitHub repository (Repo), and feed.json in the newest one
-// describes it: its version, notes, and every file with its SHA-256.
+// Package update keeps magpie current. Builds are published as GitHub
+// releases of yetone/magpie-releases; usemagpie.ai/api/latest describes the
+// newest one: its version, notes, and every file with its SHA-256.
 //
 // The macOS app replaces its own bundle: the new zip is downloaded, checked
 // against its hash, unpacked, and accepted only if it is signed by the same
@@ -41,27 +41,11 @@ import (
 	"github.com/yetone/magpie/internal/winarm"
 )
 
-// Site is this build's home: the GitHub repository its releases are
-// published in.
-const Site = "https://github.com/SophiaData/magpie-lite"
+// Site is magpie's home; its /api/latest is the update feed.
+const Site = "https://usemagpie.ai"
 
-// Repo is the GitHub repository (owner/name) this build's releases and
-// notes come from.
-const Repo = "SophiaData/magpie-lite"
-
-// AutoUpdateDisabled is this build's own choice: it never asks for a newer
-// version by itself, on any setting. A check the user asks for (Settings'
-// Check, `magpie update`) still works.
-const AutoUpdateDisabled = true
-
-// feedAsset is a file this build's newest release carries: release.yml
-// builds the update feed and the notes feed beside the binaries, so
-// releases/latest/download always serves the newest one.
-const feedAsset = "https://github.com/" + Repo + "/releases/latest/download/"
-
-// Feed is where the newest release is described, in this build's own
-// releases. MAGPIE_UPDATE_FEED points it elsewhere, for testing an update
-// against a local server.
+// Feed is where the newest release is described. MAGPIE_UPDATE_FEED points
+// it elsewhere, for testing an update against a local server.
 func Feed() string {
 	if f := os.Getenv("MAGPIE_UPDATE_FEED"); f != "" {
 		return f
@@ -388,13 +372,24 @@ func Homebrew(exe string) bool {
 	return strings.Contains(filepath.ToSlash(exe), "/Cellar/magpie/")
 }
 
-// Executable is the running binary, symlinks resolved.
+// Executable is the running binary, symlinks resolved. When they can't be
+// (Go's EvalSymlinks fails on the current junction Scoop runs an app from,
+// "The system cannot find the path specified"), it is the path the binary
+// was started from, which still names it.
 func Executable() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.EvalSymlinks(exe)
+	return resolved(exe), nil
+}
+
+// resolved is path with its symlinks resolved, or path when that fails.
+func resolved(path string) string {
+	if p, err := filepath.EvalSymlinks(path); err == nil {
+		return p
+	}
+	return path
 }
 
 // Writable reports whether magpie may replace what lives in dir.

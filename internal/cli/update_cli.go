@@ -56,10 +56,6 @@ func updateAutoCmd(args []string) error {
 			return err
 		}
 	}
-	if update.AutoUpdateDisabled {
-		fmt.Println("automatic updates are off in this build", muted.Render("· magpie update or Settings' Check looks for one"))
-		return nil
-	}
 	every := "6h"
 	for k, m := range updateEveries {
 		if m == s.UpdateEvery {
@@ -104,10 +100,10 @@ func updateMirrorCmd(args []string) error {
 		}
 	}
 	if s.UpdateMirror == "" {
-		fmt.Println("updates are downloaded from GitHub", muted.Render("· magpie update mirror <prefix> has them come through a mirror; the checksum is still the release's own"))
+		fmt.Println("updates are downloaded from usemagpie.ai, and from GitHub when that fails", muted.Render("· magpie update mirror <prefix> has GitHub's come through a mirror; the checksum is still usemagpie.ai's"))
 		return nil
 	}
-	fmt.Println("updates are downloaded through", bold.Render(s.UpdateMirror), muted.Render("· each is checked against the release's own checksum · magpie update mirror off goes back to GitHub"))
+	fmt.Println("updates are downloaded from usemagpie.ai, and through", bold.Render(s.UpdateMirror), "when that fails", muted.Render("· each is checked against usemagpie.ai's checksum · magpie update mirror off goes back to GitHub"))
 	return nil
 }
 
@@ -231,7 +227,11 @@ func updateCmd(args []string) error {
 	}
 	if !update.Newer(rel.Version, version) {
 		if update.Released(version) {
-			if ch := update.Channel(); ch != "" {
+			if ch := update.Channel(); ch != "" && update.Newer(version, rel.Version) {
+				// newer than the channel's: nothing is installed until the
+				// channel passes it (realfxw on X), which "up to date" hid
+				fmt.Println("magpie", version, "is newer than the "+ch+" channel's "+rel.Version+muted.Render("; it updates once "+ch+" passes it, or now with `magpie update channel every`"))
+			} else if ch != "" {
 				fmt.Println(green.Render("✓"), "magpie", version, muted.Render("is up to date on the "+ch+" channel ("+ch+" is "+rel.Version+")"))
 			} else {
 				fmt.Println(green.Render("✓"), "magpie", version, muted.Render("is the latest"))
@@ -278,7 +278,7 @@ func updateCmd(args []string) error {
 	// the Docker image's /magpie, run as nonroot: the image is what is
 	// updated, and a replace would only fail with "permission denied"
 	if exe, err := updateExecutable(); err == nil && !update.Writable(filepath.Dir(exe)) && !updateCanElevate() && updateInContainer() {
-		return fmt.Errorf("this magpie runs in a container and can't replace itself; pull the new image (docker pull ghcr.io/yetone/magpie:latest) and recreate the container")
+		return fmt.Errorf("this magpie runs in a container and can't replace itself; pull the image of %s (docker pull %s) and recreate the container from it", rel.Version, update.Image(rel.Version))
 	}
 	// a package manager's binary (Homebrew's, pacman's magpie-bin from
 	// the AUR, a .deb's): replaced under it, the manager's database names
