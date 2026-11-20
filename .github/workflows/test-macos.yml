@@ -1,0 +1,50 @@
+name: Test (macOS)
+
+# The suite test.yml runs on ubuntu and Windows, on a macOS runner: it takes
+# about half an hour there, so it does not hold a release (release.yml waits
+# for test.yml's run on the commit it publishes). Daily, and when asked.
+on:
+  schedule:
+    - cron: '0 20 * * *' # 04:00 in Beijing
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Test
+        # A package slower than Go's 10-minute default must not fail the run
+        # (LESSONS.md, "A full run gives the slow packages room").
+        run: go test -timeout 45m ./...
+
+      # The redaction tests reuse this binary in fresh processes to check
+      # first-use races, so it must include the race detector. The gateway's
+      # tests can't call t.Parallel (t.Setenv), so its suite runs split over
+      # one process per core (#923); each process isolates its own home.
+      - name: Race
+        shell: bash
+        run: |
+          go test -race -c -o "$RUNNER_TEMP/gateway.race" ./internal/gateway/
+          build/race-shards.sh internal/gateway "$RUNNER_TEMP/gateway.race" "$(getconf _NPROCESSORS_ONLN)" -test.timeout=20m
+          go test -race ./internal/redact/
+
+      # Account usage mixes cached results with concurrent fetches.
+      - name: Race account usage
+        run: go test -race ./internal/provider/ -run '^Test(LoginUsage|SubscriptionUsageEachAccount)'

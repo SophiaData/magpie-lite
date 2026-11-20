@@ -1,11 +1,10 @@
 name: Release
 
-# Pushing a v* tag hands off to yetone/magpie-releases, which builds, signs,
-# notarises and publishes magpie there; that repo is where people download
-# from, and the signing secrets live only there. Once its release has every
-# asset, the same release is copied here, so this repo's Releases page has
-# the installers too (PapainTea on X). Self-update, install.sh and the site
-# still read magpie-releases only.
+# Build this fork's own release here: the Windows, Linux and macOS desktop
+# builds and the terminal-only builds, published on this repository's Releases
+# page. This build reads and installs its updates from there
+# (internal/update): feed.json and notes.json are built beside the binaries
+# and attached to every release, and releases/latest/download serves them.
 
 on:
   push:
@@ -14,193 +13,333 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., 0.1.0 — no v prefix; the v tag must exist)'
+        description: 'Version to release, no v prefix (e.g. 0.2.1)'
         required: true
         type: string
 
-jobs:
-  trigger-release:
-    runs-on: ubuntu-latest
-    # room for the dispatch to wait out the owner's API rate limit (65 min)
-    timeout-minutes: 75
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      ref: ${{ steps.version.outputs.ref }}
+permissions:
+  contents: write
+  actions: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
     steps:
-      - name: Get version
-        id: version
+      - name: Read the version
+        id: v
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            REF="$GITHUB_REF_NAME"
-            VERSION="${REF#v}"
+            TAG="$GITHUB_REF_NAME"
+            VERSION="${TAG#v}"
           else
             VERSION="$INPUT_VERSION"
-            REF="v$INPUT_VERSION"
+            TAG="v$VERSION"
           fi
-          # a newline or quote would add outputs or break the JSON below
           [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "bad version: $VERSION" >&2; exit 1; }
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "ref=$REF" >> $GITHUB_OUTPUT
-          echo "Triggering release for version: $VERSION (ref: $REF)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "building $TAG"
 
-      - name: Trigger release workflow in magpie-releases
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the desktop app and the terminal builds
+        shell: bash
         env:
-          # PAT with contents write on yetone/magpie-releases. It is the
-          # owner's, so it shares the 5,000/hr core limit with every `gh`
-          # the owner runs: v0.1.3561 to v0.1.3573 failed here with "API
-          # rate limit exceeded" and never got a release. A rate-limited
-          # answer waits for the reset and tries again, up to 65 minutes.
-          TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
-          API_URL: ${{ github.api_url }}
-          REF: ${{ steps.version.outputs.ref }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: v${{ needs.version.outputs.version }}
         run: |
-          set -euo pipefail
-          payload=$(jq -nc --arg ref "$REF" --arg version "$VERSION" \
-            '{event_type: "release", client_payload: {ref: $ref, version: $version}}')
-          url="$API_URL/repos/yetone/magpie-releases/dispatches"
-          tmp=$(mktemp -d)
-          deadline=$(( $(date +%s) + ${DISPATCH_MAX_WAIT:-3900} ))
-          header() { awk -v k="$1" -F': *' 'tolower($1) == k { v = $2 } END { sub(/\r$/, "", v); print v }' "$tmp/headers"; }
-          for try in $(seq 1 100); do
-            code=$(curl -sS -o "$tmp/body" -D "$tmp/headers" -w '%{http_code}' -X POST \
-              -H "Authorization: Bearer $TOKEN" \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2022-11-28' \
-              --data "$payload" "$url") || { echo "::error::dispatch request failed (curl exit $?)"; exit 1; }
-            if [[ "$code" == 2* ]]; then
-              echo "Dispatched release for $REF (HTTP $code, try $try)"
-              exit 0
-            fi
-            retry_after=$(header retry-after)
-            remaining=$(header x-ratelimit-remaining)
-            reset=$(header x-ratelimit-reset)
-            limited=
-            if [[ "$code" == 403 || "$code" == 429 ]]; then
-              if [[ -n "$retry_after" || "$remaining" == 0 ]] || grep -qi 'rate limit' "$tmp/body"; then
-                limited=1
-              fi
-            fi
-            if [[ -z "$limited" ]]; then
-              echo "::error::dispatch failed with HTTP $code"
-              cat "$tmp/body"; echo
-              exit 1
-            fi
-            now=$(date +%s)
-            if [[ "$retry_after" =~ ^[0-9]+$ ]]; then
-              until=$(( now + retry_after ))
-            elif [[ "$reset" =~ ^[0-9]+$ ]] && (( reset > now )); then
-              until=$reset
-            else
-              until=$(( now + 60 )) # a secondary limit may give neither
-            fi
-            until=$(( until + 5 ))
-            if (( until > deadline )); then
-              echo "::error::rate limited (HTTP $code) until $(date -u -d "@$until" 2>/dev/null || echo "$until"), past the wait allowed"
-              cat "$tmp/body"; echo
-              exit 1
-            fi
-            echo "::warning::rate limited (HTTP $code, try $try); waiting $(( until - now ))s for the limit to reset"
-            sleep $(( until - now ))
+          # footprint-overlay.sh writes go env GOROOT into its overlay JSON as
+          # is: on this host that is a C:\ path, and go reads the \h of
+          # \hostedtoolcache as a bad escape. The overlay patches
+          # runtime/mem_darwin.go, which these builds only reach when the
+          # macOS runners make them.
+          make release-windows VERSION="$VERSION" OVERLAY=
+          make release-cli TARGETS="windows/amd64 windows/arm64" VERSION="$VERSION" OVERLAY=
+          make release-cli TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 android/arm64" VERSION="$VERSION" OVERLAY=
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-and-cli
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install GTK and WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - name: Build the desktop app (Linux)
+        env:
+          VERSION: v${{ needs.version.outputs.version }}
+        run: make release-linux VERSION="$VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: amd64
+          - runner: macos-15
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The Intel runner answered "No space left on device" to hdiutil while
+      # the root volume showed room: hdiutil works in TMPDIR, so keep that
+      # on the workspace's volume, and the build cache is what fills a disk.
+      - name: Free disk space
+        run: |
+          df -h
+          echo "TMPDIR=$TMPDIR"
+          go clean -cache
+          df -h
+
+      - name: Build the desktop app bundle
+        env:
+          VERSION: v${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          test "$(go env GOOS)" = darwin
+          test "$(go env GOARCH)" = "$ARCH"
+          make release-darwin VERSION="$VERSION"
+          test -f "dist/magpie-darwin-$ARCH.zip"
+          test -f "dist/magpie-darwin-$ARCH.dmg"
+          # verify can answer "Resource temporarily unavailable" right after
+          # the image is written, so give it a few tries; the mount below is
+          # what holds the image to its contents.
+          verified=no
+          for try in 1 2 3; do
+            if hdiutil verify "dist/magpie-darwin-$ARCH.dmg"; then verified=yes; break; fi
+            echo "hdiutil verify failed (try $try)"
+            sleep 5
           done
-          echo "::error::dispatch still rate limited after $try tries"
-          exit 1
+          test "$verified" = yes
+          MNT="$RUNNER_TEMP/dmg"
+          mkdir -p "$MNT"
+          hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "dist/magpie-darwin-$ARCH.dmg"
+          test -x "$MNT/magpie.app/Contents/MacOS/magpie"
+          test -L "$MNT/Applications"
+          codesign --verify --deep --strict "$MNT/magpie.app"
+          hdiutil detach "$MNT"
 
-      - name: Output status
-        run: echo "Watch the build at https://github.com/yetone/magpie-releases/actions"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: |
+            dist/magpie-darwin-${{ matrix.arch }}.zip
+            dist/magpie-darwin-${{ matrix.arch }}.dmg
+          if-no-files-found: error
 
-  mirror-release:
-    needs: trigger-release
+  publish:
+    needs: [version, windows, linux, macos]
     runs-on: ubuntu-latest
-    # magpie-releases' macOS jobs can wait an hour or more for a hosted
-    # runner when several tags queue: v0.1.2262 published 62 minutes after
-    # its tag, two minutes after a 60-minute wait here gave up, and it was
-    # never copied here (#4488)
-    timeout-minutes: 330
-    permissions:
-      contents: write
-      issues: write # to say a release went out without Chinese notes
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      REF: ${{ needs.trigger-release.outputs.ref }}
-      ASSETS: 17 # what every release carries; a smaller count is still uploading
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - name: Wait for magpie-releases to publish every asset
-        run: |
-          for i in $(seq 1 600); do
-            n=$(gh release view "$REF" -R yetone/magpie-releases --json assets -q '.assets | length' 2>/dev/null || echo 0)
-            echo "attempt $i: $n of $ASSETS assets"
-            [ "$n" -ge "$ASSETS" ] && exit 0
-            sleep 30
-          done
-          echo "magpie-releases never published $REF with $ASSETS assets" >&2
-          exit 1
+      # The notes step reads the branch's history (the upstream tag this build
+      # took, and the commits since the last release), so it needs the repo,
+      # not only the artifacts.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Copy the release here
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: The release's notes
         run: |
           set -euo pipefail
-          mkdir -p dist
-          gh release download "$REF" -R yetone/magpie-releases -D dist
-          gh release view "$REF" -R yetone/magpie-releases --json body -q .body > notes.md
-          printf '\n\n---\nThe same release, and the feed magpie updates from: https://github.com/yetone/magpie-releases/releases/tag/%s\n' "$REF" >> notes.md
-          # GitHub marks the release published last Latest unless told
-          # otherwise. v0.1.3360's mac signing failed and its rerun was
-          # copied here after 3361 and 3362, so it took the mark (11-09):
-          # a release is Latest only when no published one here is higher,
-          # and the highest has the mark once this one is out.
-          newest() {
-            gh release list -R "$GITHUB_REPOSITORY" -L 100 --exclude-drafts --exclude-pre-releases --json tagName -q '.[].tagName' |
-              { grep -E '^v[0-9]+(\.[0-9]+)*$' || true; } | sort -V | tail -1
-          }
-          top=$(newest)
-          if [ -z "$top" ] || [ "$(printf '%s\n%s\n' "$top" "$REF" | sort -V | tail -1)" = "$REF" ]; then
-            latest=true
-          else
-            latest=false
-            echo "$top is newer: $REF is copied without the Latest mark"
-          fi
-          if gh release view "$REF" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$REF" -R "$GITHUB_REPOSITORY" --notes-file notes.md --latest="$latest"
-            gh release upload "$REF" dist/* -R "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$REF" dist/* -R "$GITHUB_REPOSITORY" --verify-tag --title "magpie $REF" --notes-file notes.md --latest="$latest"
-          fi
-          n=$(gh release view "$REF" -R "$GITHUB_REPOSITORY" --json assets -q '.assets | length')
-          echo "$REF has $n assets here"
-          [ "$n" -ge "$ASSETS" ]
-          # two copies at once can each decide before the other is out
-          top=$(newest)
-          now=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" -q .tag_name 2>/dev/null || true)
-          if [ -n "$top" ] && [ "$now" != "$top" ]; then
-            echo "Latest here was ${now:-none}: giving the mark to $top"
-            gh release edit "$top" -R "$GITHUB_REPOSITORY" --latest >/dev/null
+          # What this build carries: the upstream release it took, and the
+          # commits this fork added on top of the release before it.
+          python3 - <<'PY'
+          import os, subprocess
+
+          version = os.environ["VERSION"]
+          sha = os.environ["GITHUB_SHA"]
+          repo = os.environ["GH_REPO"]
+
+          def gh(*args):
+              r = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
+              if r.returncode != 0:
+                  print(f"::warning::gh {' '.join(args)} failed: {r.stderr.strip()[:200]}")
+              return r.stdout.strip() if r.returncode == 0 else ""
+
+          upstream = ""
+          log = subprocess.run(
+              ["git", "log", "-1", "--format=%s", "--grep=^upstream: "],
+              capture_output=True, text=True, encoding="utf-8")
+          if log.returncode != 0:
+              print(f"::warning::git log failed: {log.stderr.strip()[:200]}")
+          subject = log.stdout.strip()
+          if subject.startswith("upstream: "):
+              upstream = subject[len("upstream: "):]
+          else:
+              print("::warning::no 'upstream:' commit in the history: the notes leave out the upstream change")
+
+          lines = [f"magpie {version}", ""]
+          built = f"基于本仓库提交 {sha[:12]} 构建。"
+          if upstream:
+              built = f"基于本仓库提交 {sha[:12]} 构建，包含上游 {upstream} 的改动。"
+          lines += [built, ""]
+
+          if upstream:
+              body = gh("api", f"repos/yetone/magpie/releases/tags/{upstream}", "--jq", ".body")
+              if body:
+                  zh = body.split("<!-- lang:zh -->", 1)[1] if "<!-- lang:zh -->" in body else body
+                  cut = zh.find("### 安装")
+                  if cut >= 0:
+                      zh = zh[:cut]
+                  zh = zh.strip()
+                  if zh:
+                      lines += [f"## 上游变更（{upstream}）", "", zh, ""]
+
+          # The release before this one; a rerun of this version finds itself
+          # first and skips it.
+          tags = gh("api", f"repos/{repo}/releases?per_page=20", "--jq", ".[].tag_name")
+          prev = next((t for t in tags.splitlines() if t and t != f"v{version}"), "")
+          if not prev:
+              print("::warning::no earlier release found: the notes leave out this fork's commits")
+          if prev:
+              out = gh("api", f"repos/{repo}/compare/{prev}...{sha}", "--jq",
+                       '.commits[].commit.message | split("\\n")[0]')
+              commits = [c for c in out.splitlines() if c and not c.startswith("upstream: ")]
+              if commits:
+                  lines += ["## 本仓库改动", ""]
+                  lines += [f"- {c}" for c in commits[:40]]
+                  lines += [""]
+
+          lines += [
+              "本版自动更新是关闭的：不会自己检查、下载或重启。要检查更新，",
+              "在设置里点「检查」，或运行 `magpie update`。",
+              "",
+              "## 安装",
+              "",
+              "Windows：下载 `magpie-windows-amd64.exe`（ARM 机器用 `magpie-windows-arm64.exe`）。",
+              "macOS：`magpie-darwin-arm64.dmg`（Apple 芯片）或 `magpie-darwin-amd64.dmg`",
+              "（Intel），打开后把 magpie 拖进「应用程序」；`magpie update` 用的是对应的 `.zip`。",
+              "终端版：`magpie-cli-<系统>-<架构>`。",
+              "macOS 包为 ad-hoc 签名、未公证，首次打开可能被系统拦下，",
+              "在「系统设置 › 隐私与安全性」里点「仍要打开」（或右键图标选「打开」）即可。",
+          ]
+          open("notes.md", "w", encoding="utf-8").write("\n".join(lines) + "\n")
+          PY
+
+      - name: Build feed.json and notes.json
+        run: |
+          set -euo pipefail
+          # The releases published before this one, which notes.json carries.
+          gh api "repos/$GH_REPO/releases?per_page=100" > prev.json || echo '[]' > prev.json
+          python3 - <<'PY'
+          import hashlib, json, os
+
+          repo = os.environ["GH_REPO"]
+          tag = os.environ["TAG"]
+          version = os.environ["VERSION"]
+          notes = open("notes.md", encoding="utf-8").read()
+          page = f"https://github.com/{repo}/releases/tag/{tag}"
+
+          assets = {}
+          for name in sorted(os.listdir("dist")):
+              if name in ("feed.json", "notes.json"):
+                  continue
+              path = os.path.join("dist", name)
+              if not os.path.isfile(path):
+                  continue
+              assets[name] = {
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                  "size": os.path.getsize(path),
+                  "sha256": hashlib.sha256(open(path, "rb").read()).hexdigest(),
+              }
+          feed = {"version": version, "notes": notes, "url": page, "assets": assets}
+          open("dist/feed.json", "w", encoding="utf-8").write(
+              json.dumps(feed, ensure_ascii=False, indent=1))
+
+          releases = []
+          try:
+              prev = json.load(open("prev.json", encoding="utf-8"))
+          except Exception:
+              prev = []
+          for r in prev:
+              if r.get("draft") or r.get("prerelease"):
+                  continue
+              t = r.get("tag_name") or ""
+              releases.append({
+                  "version": t[1:] if t.startswith("v") else t,
+                  "notes": r.get("body") or "",
+                  "url": r.get("html_url") or "",
+              })
+          releases.insert(0, {"version": version, "notes": notes, "url": page})
+          open("dist/notes.json", "w", encoding="utf-8").write(
+              json.dumps({"releases": releases}, ensure_ascii=False, indent=1))
+          PY
+
+      - name: Test passed on this commit
+        run: |
+          set -euo pipefail
+          ok=$(gh api "repos/$GH_REPO/actions/workflows/test.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=20" \
+                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "$ok" -eq 0 ]; then
+            echo "Test has not passed on $GITHUB_SHA; this refuses to publish until it does" >&2
+            exit 1
           fi
 
-      # The Chinese notes are written by magpie-releases' DeepSeek call, and
-      # when that call fails the release goes out in English alone: a spent
-      # balance did so for v0.1.1233 to v0.1.1242, and Chinese apps showed
-      # English for a day until a user said so (#2122). Its warning is in a
-      # log nobody reads, so a release without them is said here, on one
-      # open issue. magpie-releases' notes.yml writes them again each hour
-      # once DeepSeek answers (it didn't for v0.1.2634 to 2646, a spent
-      # balance again), and notes-mirror.yml copies them here.
-      - name: Say when the notes have no Chinese
-        env:
-          GH_REPO: ${{ github.repository }}
+      - name: Publish the release
         run: |
-          set -uo pipefail
-          if grep -qF '<!-- lang:zh -->' notes.md; then
-            echo "$REF has Chinese notes"
-            exit 0
-          fi
-          title="Release notes without Chinese"
-          msg="$REF went out with English notes alone: magpie-releases' release run got no Chinese from DeepSeek. Its reason is the \`DeepSeek wrote no Chinese notes\` warning in that run's Generate changelog step (https://github.com/yetone/magpie-releases/actions); \`insufficient_balance_error\` means the DEEPSEEK_API_KEY account needs a top-up. Until then apps set to Chinese show its commit subjects (#2122). magpie-releases' notes.yml writes the notes again each hour once DeepSeek answers, and notes-mirror.yml copies them here; notes written by hand below a \`<!-- lang:zh -->\` marker are kept."
-          n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title -q ".[] | select(.title == \"$title\") | .number" | head -1) || n=""
-          if [ -n "$n" ]; then
-            gh issue comment "$n" --body "$msg" || echo "::warning::could not comment on #$n: $msg"
+          set -euo pipefail
+          ls -l dist
+          # A draft first, every asset uploaded, then Latest: a release never
+          # shows a half-uploaded set to `releases/latest/download`.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --draft=false --notes-file notes.md --latest
           else
-            gh issue create --title "$title" --body "$msg" || echo "::warning::could not file an issue: $msg"
+            gh release create "$TAG" --draft --title "magpie $TAG" --notes-file notes.md --target main
+            gh release upload "$TAG" dist/*
+            gh release edit "$TAG" --draft=false --notes-file notes.md --latest
           fi
+          gh release view "$TAG" --json assets -q '.assets[].name'
