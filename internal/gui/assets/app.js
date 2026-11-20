@@ -20130,8 +20130,12 @@ function renderCLI(r) {
   cliAsk?.then((v) => { if (r.isConnected) paint(v); }, () => { if (!cliView) sub.textContent = t("Couldn't tell"); });
 }
 
-// Settings' Download source (#893): a GitHub mirror before github.com, as
-// `magpie update mirror` writes; the feed and SHA-256 stay usemagpie.ai's
+// Settings' Download source (#893): where an update's file is downloaded
+// from — GitHub, or a GitHub download mirror put before its URL, the same
+// setting `magpie update mirror` writes. magpie names no mirror of its
+// own; the feed and each file's SHA-256 still come from the release's own
+// file that doesn't match is never installed. A draft and its error are
+// kept across the page being drawn again.
 let mirrorEditing = false, mirrorDraft = "", mirrorErr = "";
 function renderSettings() {
   const s = prefs;
