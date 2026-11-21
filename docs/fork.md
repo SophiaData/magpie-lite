@@ -24,7 +24,9 @@ one diff to carry to the next upstream version.
 - **No partners.** The partner list is not offered at all rather than
   switched off: `partnersSource` answers none whatever the environment
   says, so no list is fetched and the add sheet has no
-  "Partners · magpie's sponsors" section.
+  "Partners · magpie's sponsors" section. Upstream's partner-feed tests
+  stay in the tree behind the `upstream_partners` build tag instead of
+  being deleted, so upstream changes to those tests do not block sync.
 - **This repository's release workflow.** `.github/workflows/release.yml`
   builds the Windows, Linux and macOS apps and the terminal builds here, and
   publishes them with the `feed.json` and `notes.json` this build reads. Each
