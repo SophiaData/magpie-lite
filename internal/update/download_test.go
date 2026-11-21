@@ -315,20 +315,34 @@ func TestDownloadStallEveryTimeSaysSo(t *testing.T) {
 	old := stallAfter
 	stallAfter = 50 * time.Millisecond
 	t.Cleanup(func() { stallAfter = old })
-	var tries atomic.Int32
+	var received atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tries.Add(1)
+		received.Add(1)
 		<-r.Context().Done() // no answer at all
 	}))
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	var attempts, retries int
+	ctx := WithStep(context.Background(), func(s string) {
+		switch s {
+		case StepDownload:
+			attempts++
+		case StepRetry:
+			retries++
+		}
+	})
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	err := download(ctx, Asset{URL: srv.URL, SHA256: "00"}, filepath.Join(t.TempDir(), "magpie.new"))
 	if err == nil || !Network(err) || !errors.Is(err, errStalled) || ctx.Err() != nil {
 		t.Fatalf("err = %v, want a stall", err)
 	}
-	if n := int(tries.Load()); n != len(retryWaits)+1 {
-		t.Fatalf("tries = %d, want %d", n, len(retryWaits)+1)
+	if attempts != len(retryWaits)+1 || retries != len(retryWaits) {
+		t.Fatalf("attempts = %d, retries = %d; want %d and %d", attempts, retries, len(retryWaits)+1, len(retryWaits))
+	}
+	// A timed-out request can be canceled in the transport before the
+	// test server's handler sees it. That is still a real download try.
+	if n := int(received.Load()); n == 0 || n > attempts {
+		t.Fatalf("server received %d requests across %d attempts", n, attempts)
 	}
 }
 
