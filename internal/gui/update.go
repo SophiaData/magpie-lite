@@ -128,13 +128,20 @@ type updateJSON struct {
 	Notes   string `json:"notes,omitempty"`
 	URL     string `json:"url,omitempty"`
 	Stuck   string `json:"stuck,omitempty"` // available: why it can't update itself
+	// Run tells this run of magpie from the next, of the same version:
+	// a page whose restart asked for no update reloads once it changes
+	// (restart.go)
+	Run int64 `json:"run,omitempty"`
 	// available, stuck "not-writable": the folder magpie may not write to
 	StuckDir string `json:"stuckDir,omitempty"`
 	// available, stuck "package": the package manager that installed
 	// magpie and updates it (pacman's magpie-bin from the AUR, say), and
 	// the command that does
 	Packaged *packagedJSON `json:"packaged,omitempty"`
-	Retry    bool          `json:"retry,omitempty"` // error: a click downloads it again
+	// available, stuck "container": the image of the version out, its
+	// own tag (update.Image)
+	Image string `json:"image,omitempty"`
+	Retry bool   `json:"retry,omitempty"` // error: a click downloads it again
 	// error: the download failed through this mirror (Settings' UpdateMirror),
 	// and GitHub itself may do (#893)
 	Mirror string `json:"mirror,omitempty"`
@@ -148,7 +155,13 @@ type updateJSON struct {
 	// isn't the newest
 	Channel string `json:"channel,omitempty"`
 	Newest  string `json:"newest,omitempty"`
-	Done    int64  `json:"done,omitempty"` // downloading: bytes so far
+	// Ahead: latest on Stable or Daily, this version is newer than the
+	// channel's (Latest). Nothing is installed until the channel passes
+	// it, and "up to date on Daily" read as an update that never came
+	// (realfxw on X: 0.1.4445 on Daily, whose pick was 0.1.4395, restarted
+	// again and again)
+	Ahead bool  `json:"ahead,omitempty"`
+	Done  int64 `json:"done,omitempty"` // downloading: bytes so far
 	// downloading: the step under way, "" before the first
 	// (update.StepDownload, StepRetry, StepVerify, StepUnpack,
 	// StepSignature), and how fast the bytes came over the last seconds,
@@ -183,20 +196,11 @@ type updateJSON struct {
 
 var updates = &updater{}
 
-// autoUpdatesDisabled keeps this build from ever asking for a newer
-// version by itself: no start-up check, no clock, no download, no restart.
-// The version row's Check and `magpie update` still work, so an update is
-// the user's own move.
-const autoUpdatesDisabled = update.AutoUpdateDisabled
-
 // updateDue is whether the feed is asked by itself now, the last time it
 // was asked at last: never with automatic updates off, otherwise once the
 // settings' interval is up. The settings are read again each minute, so
 // one changed (in Settings or the CLI) counts from the last check.
 func updateDue(s settings.Settings, last, now time.Time) bool {
-	if autoUpdatesDisabled {
-		return false
-	}
 	return !s.NoAutoUpdate && now.Sub(last) >= time.Duration(s.UpdateEvery)*time.Minute
 }
 
@@ -210,9 +214,6 @@ func (u *updater) start() {
 	go u.followReplaced(backendCtx)                     // the app's or magpie web's update (visamzh on X)
 	if u.bundle != "" {
 		go update.ForgetOldStaging(u.bundle) // #3965
-	}
-	if autoUpdatesDisabled {
-		return
 	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
@@ -510,7 +511,7 @@ func (u *updater) latestStale() bool {
 // stale "latest", unless automatic updates are off. It doesn't wait for
 // the answer: the row shows checking, and reads again.
 func (u *updater) refreshLatest(s settings.Settings) {
-	if autoUpdatesDisabled || s.NoAutoUpdate {
+	if s.NoAutoUpdate {
 		return
 	}
 	u.mu.Lock()
@@ -811,11 +812,12 @@ func (u *updater) jsonIn(lang string) updateJSON {
 			go u.relang(u.latest.Version, lang)
 		}
 	}
-	j := updateJSON{State: u.state, Current: Version, Error: u.err, Retry: u.retry}
+	j := updateJSON{State: u.state, Current: Version, Run: runStarted, Error: u.err, Retry: u.retry}
 	if u.channel != "" && u.latest != nil {
 		j.Channel = u.channel
 		if u.state == "latest" {
 			j.Newest = u.newest
+			j.Ahead = update.Newer(Version, u.latest.Version)
 		}
 	}
 	if u.latestStale() {
@@ -831,6 +833,9 @@ func (u *updater) jsonIn(lang string) updateJSON {
 		j.Stuck = u.stuck
 		if u.stuck == "not-writable" {
 			j.StuckDir = u.exeDir
+		}
+		if u.stuck == "container" && u.latest != nil {
+			j.Image = update.Image(u.latest.Version)
 		}
 		if u.stuck == "package" && u.packaged != nil {
 			j.Packaged = &packagedJSON{Manager: u.packaged.Name(), Package: u.packaged.Package, Command: u.packaged.Command()}
@@ -1153,7 +1158,16 @@ func restartInto(web, window bool, view string, bySelf bool) bool {
 		return false
 	}
 	if err != nil {
+		// the new version is in place but nothing started it: quitting now
+		// would leave no magpie running at all (ShipInSand on X: it "often
+		// disappears by itself"). This one runs on and says so.
 		log.Println("update:", err)
+		os.Remove(filepath.Join(settings.Dir(), updatedInAppFile))
+		unmarkQuietRestart()
+		updates.mu.Lock()
+		updates.err = "the new version is installed but couldn't be started (" + err.Error() + "): quit magpie and open it again"
+		updates.mu.Unlock()
+		return false
 	}
 	return true
 }
