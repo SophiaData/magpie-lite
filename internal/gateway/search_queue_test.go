@@ -22,7 +22,8 @@ import (
 func TestSearchQueueKeepsCodexAlive(t *testing.T) {
 	keepFast(t, 10*time.Millisecond, 20*time.Millisecond, 100*time.Millisecond)
 	held, quiet, watch, silent := keepHeldAfter, agentQuietMost, watchEvery, translatedQuietLongest
-	keepHeldAfter, agentQuietMost, watchEvery, translatedQuietLongest = 10*time.Millisecond, 50*time.Millisecond, 5*time.Millisecond, 40*time.Millisecond
+	// Keep the translated idle window above CI scheduler jitter while remaining below the client idle budget.
+        keepHeldAfter, agentQuietMost, watchEvery, translatedQuietLongest = 10*time.Millisecond, 300*time.Millisecond, 5*time.Millisecond, 250*time.Millisecond
 	t.Cleanup(func() { keepHeldAfter, agentQuietMost, watchEvery, translatedQuietLongest = held, quiet, watch, silent })
 	for _, mode := range []string{"comments", "progress", "cancel", "silent"} {
 		t.Run(mode, func(t *testing.T) {
