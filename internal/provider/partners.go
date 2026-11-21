@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
@@ -33,8 +34,8 @@ import (
 // package as Plugin and no endpoint: it is listed at the top of the
 // Plugins page's Discover (PluginPartners), never in the add sheet.
 
-// PartnersURL is where upstream keeps the list. This build lists none: it
-// is not a setting, so no list is fetched and nothing turns one on.
+// PartnersURL is where the list is kept; MAGPIE_PARTNERS moves it, and
+// MAGPIE_PARTNERS=off keeps to none.
 const PartnersURL = "https://usemagpie.ai/api/partners"
 
 // KindPartner is a partner's Kind: the add sheet lists them apart.
@@ -121,11 +122,17 @@ var npmPackage = lazyre.New(`^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*$`)
 
 func partnerCacheFile() string { return filepath.Join(appdir.Cache(), "partners.json") }
 
-// partnersSource says where a list would come from, and this build has
-// none: it is not a setting, the environment cannot name a list, and every
-// reader below keeps to none because of it.
 func partnersSource() string {
-	return "off"
+	src := os.Getenv("MAGPIE_PARTNERS")
+	if src == "" {
+		if testing.Testing() {
+			// a test never asks the real site; one that wants a list
+			// names its own
+			return "off"
+		}
+		src = PartnersURL
+	}
+	return src
 }
 
 // Partners are the add sheet's partners listed now, in the list's order:
@@ -359,9 +366,6 @@ func NoticePartners(ids ...string) {
 
 // PartnerNoticed reports whether the user has been shown the partner id.
 func PartnerNoticed(id string) bool {
-	if partnersSource() == "off" {
-		return false
-	}
 	partnerMu.Lock()
 	defer partnerMu.Unlock()
 	loadPartners()

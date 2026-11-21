@@ -270,9 +270,7 @@ func TestHubCodeBuiltinsEndWithTheirProcess(t *testing.T) {
 		go func() { got <- run(code) }()
 		select {
 		case m := <-got:
-			// On a loaded runner the deadline can stop the allocation before the heap limit.
-			// Both are safe process-local termination; a successful result is not.
-			if !m.Result.IsError || (!strings.Contains(codeText(m), want) && !(want == "memory" && strings.Contains(codeText(m), "didn't finish"))) {
+			if !m.Result.IsError || !strings.Contains(codeText(m), want) {
 				t.Fatalf("%s gave %q, want %q", code, codeText(m), want)
 			}
 		case <-time.After(20 * time.Second):

@@ -4888,6 +4888,10 @@ function openPicker(agent, field, anchor, ev, only) {
     const whose = !!name && !!c.group && c.group !== ROUTING_GROUPS && options.some((o) => o.group && o.group !== c.group && (o.label || "").toLowerCase() === name);
     options.unshift({ ...c, group: "", home: c.group, whose });
   }
+  // an effort's stops are the panel slider's: levels lowest first, and a
+  // value not offered in its place among them, not first, where max read
+  // as below high (mathfournity on X)
+  else if (effortPicker) options = cur ? effortStops({ value: cur, options }) : levelOrder(options);
   else if (i < 0 && cur && !only) options.unshift({ value: cur, note: t("current value") });
   // the agent's own default: magpie's wiring comes out and the key is removed
   if (FOLLOWS_MODEL.includes(field.label)) {
@@ -4982,12 +4986,19 @@ function effortName(option) {
 // thinking at all.
 const EFFORT_ORDER = ["off", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-// effortStops are an effort field's options with its value among them when
-// it isn't one, as the panel's slider has its stops: a level in its place
-// (max above high), anything else — unset, auto, one magpie doesn't know —
-// first.
+// levelOrder: options with the levels among them lowest first, each other
+// option (Default, auto, one magpie doesn't know) where it was
+function levelOrder(o) {
+  const r = (x) => EFFORT_ORDER.indexOf(x.value), l = o.filter((x) => r(x) >= 0).sort((a, b) => r(a) - r(b));
+  return o.map((x) => r(x) < 0 ? x : l.shift());
+}
+
+// effortStops are an effort field's options, levels lowest first, with its
+// value among them when it isn't one, as the panel's slider and the effort
+// picker have their stops: a level in its place (max above high), anything
+// else — unset, auto, one magpie doesn't know — first.
 function effortStops(f) {
-  const options = f?.options || [];
+  const options = levelOrder(f?.options || []);
   if (!f || options.some((o) => o.value === f.value)) return options;
   const r = EFFORT_ORDER.indexOf(f.value);
   const i = r < 0 ? 0 : options.findIndex((o) => EFFORT_ORDER.indexOf(o.value) > r);
@@ -5031,9 +5042,8 @@ function effortBars(f) {
 // shows at once, bars and all; the write follows, in order, so a slow agent
 // config never holds the thumb (巨卡).
 function effortSeg(a, f) {
-  // a value that isn't one of the levels offered is a stop of its own, as
-  // the picker's current value is (shown as the lowest level, a touch wrote
-  // that level over it)
+  // a value that isn't one of the levels offered is a stop of its own, in
+  // its place among them, as the picker's current value is
   const options = effortStops(f);
   const last = Math.max(1, options.length - 1);
   const box = el("div", "effort-control");
@@ -10156,7 +10166,7 @@ function drawEditor(p, presetID) {
   const socketable = () => !p?.account && (p?.preset || pr?.id) !== "google-vertex" && /^\s*https?:\/\//i.test(addressOf("responses"));
   const sockAt = document.createComment("");
   advIn.append(sockAt);
-  import("./socketrow.js").then(() => draft === certDraft && socketRow({ p, draft, at: sockAt, socketable, addressOf, show: (f) => { showSocket = f; f(); } }), statusErr);
+  import("./socketrow.js").then(() => draft === certDraft && socketRow({ p, draft, at: sockAt, socketable, addressOf, remote: () => remote, show: (f) => { showSocket = f; f(); } }), statusErr);
   // off, a 429 or quota refusal rests none of its keys (LimitRestOff, zoecats)
   if (custom) {
     const [rtk, rcb] = tick(t("Set it aside when out of quota or rate limited"), !draft.limitRestOff);
@@ -20218,12 +20228,8 @@ function renderCLI(r) {
   cliAsk?.then((v) => { if (r.isConnected) paint(v); }, () => { if (!cliView) sub.textContent = t("Couldn't tell"); });
 }
 
-// Settings' Download source (#893): where an update's file is downloaded
-// from — GitHub, or a GitHub download mirror put before its URL, the same
-// setting `magpie update mirror` writes. magpie names no mirror of its
-// own; the feed and each file's SHA-256 still come from the release's own
-// file that doesn't match is never installed. A draft and its error are
-// kept across the page being drawn again.
+// Settings' Download source (#893): a GitHub mirror before github.com, as
+// `magpie update mirror` writes; the feed and SHA-256 stay usemagpie.ai's
 let mirrorEditing = false, mirrorDraft = "", mirrorErr = "";
 function renderSettings() {
   const s = prefs;

@@ -25,18 +25,19 @@ type Note struct {
 	Pending bool `json:"pending,omitempty"`
 }
 
-// NotesFeed is where the notes of past releases are listed: this build's
-// own releases. MAGPIE_NOTES_FEED points it elsewhere.
+// NotesFeed is where the notes of past releases are listed: beside the
+// update feed, on magpie's site. MAGPIE_NOTES_FEED points it elsewhere.
 func NotesFeed() string {
 	if f := os.Getenv("MAGPIE_NOTES_FEED"); f != "" {
 		return f
 	}
-	return feedAsset + "notes.json"
+	return Site + "/api/notes"
 }
 
-// ReleasePage is version's page on GitHub, where its notes are.
+// ReleasePage is version's page on GitHub, where its notes are when the
+// site can't give them (#661).
 func ReleasePage(version string) string {
-	return "https://github.com/" + Repo + "/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
+	return "https://github.com/yetone/magpie-releases/releases/tag/v" + strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
 // NotesBetween asks the site for the notes of every release after after
@@ -184,12 +185,7 @@ func Channel() string {
 // rather than offering every one: only the site knows a picked release.
 func Picked() bool { return Channel() != "" }
 
-// Stable is whether Settings' Update channel is Stable: the update feed is
-// asked for a version a week, the newest that had been out three days as
-// the week began (Monday 00:00 UTC), or an urgent one (a security hole, a
-// ban risk, lost data) as soon as it is out. This build's feed is a static
-// file of the newest release (see Feed), which ignores the channel: Stable
-// lists what every channel lists, the newest release.
+// Stable is whether Settings' Update channel is Stable.
 func Stable() bool { return Channel() == settings.UpdateStable }
 
 // withChannel is feed asking for the channel's release on Stable or Daily,
