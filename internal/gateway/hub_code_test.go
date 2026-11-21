@@ -138,12 +138,17 @@ func TestHubCodeErrors(t *testing.T) {
 		`return (`:                                                      "doesn't parse",
 		`return await tools.gh__search_issues({})`:                      "github__search_issues",
 		`return await tools.nothing__here({})`:                          "no tool is called nothing__here",
+		`return await tools.x__fetch({})`:                               "no tool is called x__fetch",
 		`tools.github__search_issues({}); return new Promise(() => {})`: "never settled",
 	} {
 		got := run(code)
 		if !got.Result.IsError || !strings.Contains(codeText(got), want) {
 			t.Fatalf("%s gave %+v, want %q", code, got, want)
 		}
+	}
+	// the agent's own names for a tool (Alma's, Claude Code's) reach it
+	if got := run(`return [await tools["magpie__github_search_issues"]({}), await tools["mcp__magpie__github__search_issues"]({})].join()`); got.Result.IsError || codeText(got) != "ok,ok" {
+		t.Fatalf("the agent's names: %+v", got)
 	}
 	if got := run(`return await tools.github__get_issue({})`); !strings.Contains(codeText(got), "Not Found") {
 		t.Fatalf("the tool's own words: %s", codeText(got))
@@ -265,9 +270,7 @@ func TestHubCodeBuiltinsEndWithTheirProcess(t *testing.T) {
 		go func() { got <- run(code) }()
 		select {
 		case m := <-got:
-			// On a loaded runner the deadline can stop the allocation before the heap limit.
-			// Both are safe process-local termination; a successful result is not.
-			if !m.Result.IsError || (!strings.Contains(codeText(m), want) && !(want == "memory" && strings.Contains(codeText(m), "didn't finish"))) {
+			if !m.Result.IsError || !strings.Contains(codeText(m), want) {
 				t.Fatalf("%s gave %q, want %q", code, codeText(m), want)
 			}
 		case <-time.After(20 * time.Second):
