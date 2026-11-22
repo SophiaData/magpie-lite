@@ -1,5 +1,3 @@
-//go:build upstream_partners
-
 package provider
 
 import (

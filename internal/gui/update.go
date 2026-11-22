@@ -197,20 +197,11 @@ type updateJSON struct {
 
 var updates = &updater{}
 
-// autoUpdatesDisabled keeps this build from ever asking for a newer
-// version by itself: no start-up check, no clock, no download, no restart.
-// The version row's Check and `magpie update` still work, so an update is
-// the user's own move.
-const autoUpdatesDisabled = update.AutoUpdateDisabled
-
 // updateDue is whether the feed is asked by itself now, the last time it
 // was asked at last: never with automatic updates off, otherwise once the
 // settings' interval is up. The settings are read again each minute, so
 // one changed (in Settings or the CLI) counts from the last check.
 func updateDue(s settings.Settings, last, now time.Time) bool {
-	if autoUpdatesDisabled {
-		return false
-	}
 	return !s.NoAutoUpdate && now.Sub(last) >= time.Duration(s.UpdateEvery)*time.Minute
 }
 
@@ -224,9 +215,6 @@ func (u *updater) start() {
 	go u.followReplaced(backendCtx)                     // the app's or magpie web's update (visamzh on X)
 	if u.bundle != "" {
 		go update.ForgetOldStaging(u.bundle) // #3965
-	}
-	if autoUpdatesDisabled {
-		return
 	}
 	go func() {
 		time.Sleep(5 * time.Second) // let the app settle first
@@ -284,6 +272,16 @@ var (
 // only ever offered the release page. The app's own binary copied out of
 // its .app isn't replaced by the terminal build.
 func (u *updater) place(goos string, gui bool) {
+	// a package's copy is its manager's to update, an app in Nix's store
+	// as much as a binary: the bundle's own check would say "read-only"
+	// and send the user to move it to Applications
+	if exe, err := executable(); err == nil {
+		if p := packagedBy(exe); p != nil {
+			u.exeDir = filepath.Dir(exe)
+			u.stuck, u.packaged = "package", p
+			return
+		}
+	}
 	if b := bundleOf(); b != "" {
 		if u.stuck = update.Stuck(b); u.stuck == "" {
 			u.bundle = b
@@ -524,7 +522,7 @@ func (u *updater) latestStale() bool {
 // stale "latest", unless automatic updates are off. It doesn't wait for
 // the answer: the row shows checking, and reads again.
 func (u *updater) refreshLatest(s settings.Settings) {
-	if autoUpdatesDisabled || s.NoAutoUpdate {
+	if s.NoAutoUpdate {
 		return
 	}
 	u.mu.Lock()

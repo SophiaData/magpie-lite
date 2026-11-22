@@ -6,10 +6,11 @@ import (
 	"testing"
 )
 
-// The updater still names the upstream's versioned image rather than a
-// floating tag. This fork does not publish Docker images: its workflow only
-// builds and smoke-tests an image, so it must not be required to push tags.
-func TestImagePointsToUpstreamAndForkDockerIsSmokeOnly(t *testing.T) {
+// The image a magpie in a container names for a release is that
+// release's own tag, the one docker.yml writes, never a floating tag
+// (latest, daily, stable) that may hold another release (fishmagic80 on
+// X: Daily found 0.1.4479 and the hint said :latest).
+func TestImageIsTheReleasesOwnTag(t *testing.T) {
 	for in, want := range map[string]string{
 		"0.1.4479":  "ghcr.io/yetone/magpie:0.1.4479",
 		"v0.1.4479": "ghcr.io/yetone/magpie:0.1.4479",
@@ -18,20 +19,15 @@ func TestImagePointsToUpstreamAndForkDockerIsSmokeOnly(t *testing.T) {
 			t.Errorf("Image(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if ImageRepo != "ghcr.io/yetone/magpie" {
-		t.Errorf("ImageRepo = %q, want upstream image", ImageRepo)
-	}
-
+	// docker.yml tags a release's image with its version, "v" taken off
 	y, err := os.ReadFile("../../.github/workflows/docker.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`docker build -t magpie-smoke`).Match(y) ||
-		!regexp.MustCompile(`docker run -d --name smoke`).Match(y) {
-		t.Error("fork docker.yml must build and run a smoke-test image")
+	if !regexp.MustCompile(`V="\$\{GITHUB_REF_NAME#v\}"`).Match(y) || !regexp.MustCompile(`TAGS=\(-t "\$IMAGE:\$V"\)`).Match(y) {
+		t.Error("docker.yml no longer tags each release's image with its version; Image names a tag that isn't written")
 	}
-	if regexp.MustCompile(`docker (login|push)`).Match(y) ||
-		regexp.MustCompile(`IMAGE: ghcr\.io/`).Match(y) {
-		t.Error("fork docker.yml must not log in to or publish an image")
+	if !regexp.MustCompile(`IMAGE: ghcr\.io/\$\{\{ github\.repository_owner \}\}/magpie`).Match(y) || ImageRepo != "ghcr.io/yetone/magpie" {
+		t.Error("the image docker.yml pushes isn't ImageRepo")
 	}
 }

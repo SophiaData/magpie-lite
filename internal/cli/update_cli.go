@@ -59,10 +59,6 @@ func updateAutoCmd(args []string) error {
 			return err
 		}
 	}
-	if update.AutoUpdateDisabled {
-		fmt.Println("automatic updates are off in this build", muted.Render("· magpie update or Settings' Check looks for one"))
-		return nil
-	}
 	every := "6h"
 	for k, m := range updateEveries {
 		if m == s.UpdateEvery {
@@ -107,10 +103,10 @@ func updateMirrorCmd(args []string) error {
 		}
 	}
 	if s.UpdateMirror == "" {
-		fmt.Println("updates are downloaded from GitHub", muted.Render("· magpie update mirror <prefix> has them come through a mirror; the checksum is still the release's own"))
+		fmt.Println("updates are downloaded from usemagpie.ai, and from GitHub when that fails", muted.Render("· magpie update mirror <prefix> has GitHub's come through a mirror; the checksum is still usemagpie.ai's"))
 		return nil
 	}
-	fmt.Println("updates are downloaded through", bold.Render(s.UpdateMirror), muted.Render("· each is checked against the release's own checksum · magpie update mirror off goes back to GitHub"))
+	fmt.Println("updates are downloaded from usemagpie.ai, and through", bold.Render(s.UpdateMirror), "when that fails", muted.Render("· each is checked against usemagpie.ai's checksum · magpie update mirror off goes back to GitHub"))
 	return nil
 }
 
@@ -255,6 +251,15 @@ func updateCmd(args []string) error {
 	if !update.Released(version) {
 		return fmt.Errorf("this magpie was built from source; update it the way you built it, or get the release from %s", update.Site)
 	}
+	// a package manager's copy (Homebrew's, pacman's magpie-bin from the
+	// AUR, a .deb's, an app or a binary in Nix's store): replaced under
+	// it, the manager's database names the old version and its next
+	// upgrade writes over this one; a store's app can't be replaced at all
+	if exe, err := updateExecutable(); err == nil {
+		if p := updatePackagedBy(exe); p != nil {
+			return fmt.Errorf("%s", p.Say())
+		}
+	}
 	if app := update.Bundle(); app != "" {
 		if update.Stuck(app) != "" {
 			return fmt.Errorf("%s can't be replaced where it is; move magpie to Applications, or download the new version from %s", tilde(app), update.Site)
@@ -288,14 +293,6 @@ func updateCmd(args []string) error {
 	// updated, and a replace would only fail with "permission denied"
 	if exe, err := updateExecutable(); err == nil && !update.Writable(filepath.Dir(exe)) && !updateCanElevate() && updateInContainer() {
 		return fmt.Errorf("this magpie runs in a container and can't replace itself; pull the image of %s (docker pull %s) and recreate the container from it", rel.Version, update.Image(rel.Version))
-	}
-	// a package manager's binary (Homebrew's, pacman's magpie-bin from
-	// the AUR, a .deb's): replaced under it, the manager's database names
-	// the old version and its next upgrade writes over this one
-	if exe, err := updateExecutable(); err == nil {
-		if p := updatePackagedBy(exe); p != nil {
-			return fmt.Errorf("%s", p.Say())
-		}
 	}
 	fmt.Println(muted.Render("  downloading " + update.BinaryAsset() + via(ctx) + " …"))
 	pctx, ended := withDownloadProgress(ctx)
