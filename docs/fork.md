@@ -16,11 +16,15 @@ one diff to carry to the next upstream version.
 
 ## The changes
 
-- **Updates come from here.** `internal/update` reads `feed.json` and
-  `notes.json` from `releases/latest/download` of this repository (`Feed`,
-  `NotesFeed`, `ReleasePage`), and `AutoUpdateDisabled` keeps automatic
-  checks, downloads and restarts off: `magpie update` and Settings' Check
-  are the ways an update happens.
+- **Updates come from here, and are trusted by hash.** `internal/update` reads
+  `feed.json` and `notes.json` from `releases/latest/download` of this
+  repository (`Feed`, `NotesFeed`, `ReleasePage`), and `AutoUpdateDisabled`
+  keeps automatic checks, downloads and restarts off: `magpie update` and
+  Settings' Check are the ways an update happens. `requireSignature` is
+  `false`: this repository's releases carry no `SHA256SUMS.sig`, because the
+  key that signs upstream's releases is not ours, so a file is held to the
+  SHA-256 the feed gives for it. A release that does carry a signature (a
+  feed pointed at with `MAGPIE_UPDATE_FEED`) still has it checked.
 - **No partners.** The partner list is not offered at all rather than
   switched off: `partnersSource` answers none whatever the environment
   says, so no list is fetched and the add sheet has no
@@ -111,6 +115,15 @@ Test (macOS) by hand when the change touches something a Mac would catch.
 
 ## What this fork does not do
 
+- **No release signing.** Upstream's release CI signs `SHA256SUMS` with
+  `UPDATE_SIGNING_KEY`, a secret of `yetone/magpie-releases`; this
+  repository has no such key, so its releases carry no `SHA256SUMS.sig` and
+  `requireSignature` is off. An update is trusted by the SHA-256 in
+  `feed.json`, which sits in the same release as the files it names and
+  comes from the same host, so a signature over that list would only be
+  checked against itself. The GitHub fallback still asks for a signature
+  (`fallback.go`, unchanged), finds no `SHA256SUMS` here, and so can't
+  rescue a failed feed: the feed is this fork's only route to an update.
 - **No Developer ID signature or notarization.** The macOS app is ad-hoc
   signed. Updates verify the feed SHA-256 and code-signature integrity, but
   an ad-hoc signature does not identify a developer or team. Gatekeeper may

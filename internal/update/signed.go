@@ -40,12 +40,25 @@ type Signed struct {
 	Sig  string `json:"sig"`
 }
 
+// requireSignature is whether a release must carry a SHA256SUMS.sig.
+//
+// This fork publishes from its own Releases, where feed.json and the files
+// it names are served by the same host out of the same release, so a
+// signature over that list would be checked against itself: the key that
+// signs yetone/magpie's releases is not this repository's, and release CI
+// here has none. A file is therefore trusted by the SHA-256 the feed gives
+// for it, which is what upstream did before firstSigned. A release that
+// does carry a signature still has it checked (verify), with the key built
+// into the binary — upstream's — so pointing MAGPIE_UPDATE_FEED at a feed
+// that signs with it keeps the stricter path.
+const requireSignature = false
+
 // signedRequired reports whether version must carry a valid signature.
 // MAGPIE_UPDATE_FEED, which points updates at a server of one's own for
 // testing, lifts the requirement (that server can't sign with our key); a
 // signature it does give is still checked.
 func signedRequired(version string) bool {
-	if os.Getenv("MAGPIE_UPDATE_FEED") != "" {
+	if !requireSignature || os.Getenv("MAGPIE_UPDATE_FEED") != "" {
 		return false
 	}
 	return !Newer(firstSigned, version)

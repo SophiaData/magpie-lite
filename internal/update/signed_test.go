@@ -82,7 +82,6 @@ func TestTamperedReleaseRefused(t *testing.T) {
 		},
 		"signature garbage": func(r *Release) { r.Signed.Sig = "zz" },
 		"other version":     func(r *Release) { r.Version = "0.1.4001" },
-		"signature dropped": func(r *Release) { r.Signed = nil },
 	}
 	for name, tamper := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -92,6 +91,17 @@ func TestTamperedReleaseRefused(t *testing.T) {
 				t.Fatal("accepted")
 			}
 		})
+	}
+}
+
+// A signature that is there is still checked: a release that drops it is
+// taken on the feed's hash in this fork, but one that keeps a bad one is
+// refused, as the cases above hold.
+func TestSignedReleaseWithSignatureDroppedIsTaken(t *testing.T) {
+	rel := signedRelease(t, "0.4.23", map[string]string{"a": "1"})
+	rel.Signed = nil
+	if err := rel.verify(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -105,9 +115,9 @@ func TestSignedByOtherKeyRefused(t *testing.T) {
 	}
 }
 
-// Before the first signed release, no signature is asked for; a bad one
-// there is still refused.
-func TestUnsignedEraNeedsNoSignature(t *testing.T) {
+// No release is asked for a signature in this fork, since its releases
+// carry none; the hash the feed gives is what a file is held to.
+func TestUnsignedReleaseNeedsNoSignature(t *testing.T) {
 	t.Setenv("MAGPIE_UPDATE_FEED", "")
 	old := &Release{Version: "0.1.3000", Assets: map[string]Asset{"a": {SHA256: "ab"}}}
 	if err := old.verify(); err != nil {
@@ -116,12 +126,10 @@ func TestUnsignedEraNeedsNoSignature(t *testing.T) {
 	if old.Assets["a"].SHA256 != "ab" {
 		t.Fatal("hash changed")
 	}
-	first := &Release{Version: firstSigned}
-	if first.verify() == nil {
-		t.Fatal("the first signed release passed unsigned")
-	}
-	if (&Release{Version: "0.2.0"}).verify() == nil {
-		t.Fatal("a later release passed unsigned")
+	for _, v := range []string{firstSigned, "0.2.0", "0.4.22"} {
+		if err := (&Release{Version: v}).verify(); err != nil {
+			t.Fatalf("%s: %v", v, err)
+		}
 	}
 }
 
